@@ -87,7 +87,7 @@ struct ContentView: View {
                 
                 HStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("虚拟设备")
+                        Text("设备")
                             .font(.caption)
                             .foregroundColor(.gray)
                         Picker("", selection: $selectedAVD) {
@@ -313,31 +313,38 @@ struct ContentView: View {
     }
     
     private func refreshAVDList() {
+        avdList.removeAll()
+
         let emulatorPath = NSHomeDirectory() + "/Library/Android/sdk/emulator/emulator"
+        let adbPath = NSHomeDirectory() + "/Library/Android/sdk/platform-tools/adb"
         let androidHome = NSHomeDirectory() + "/Library/Android/sdk"
-        
+
+        let listAVDsCmd = "\(emulatorPath) -list-avds"
+        let listDevicesCmd = "\(adbPath) devices | grep -v 'List' | awk '{print $1}'"
+
         let task = Process()
         task.launchPath = "/bin/bash"
         task.environment = ProcessInfo.processInfo.environment.merging(["ANDROID_HOME": androidHome]) { _, new in new }
-        task.arguments = ["-i", "-c", "\(emulatorPath) -list-avds"]
-        
+        task.arguments = ["-i", "-c", "\(listAVDsCmd); echo; \(listDevicesCmd)"]
+
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = pipe
-        
+
         do {
             try task.run()
             task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             if let output = String(data: data, encoding: .utf8) {
-                avdList = output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+                let lines = output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+                avdList = lines
                 if !avdList.isEmpty {
                     if selectedAVD == nil {
                         selectedAVD = avdList[0]
                     }
-                    log("✓ 找到 \(avdList.count) 个虚拟设备: \(avdList.joined(separator: ", "))")
+                    log("✓ 找到设备: \(avdList.joined(separator: ", "))")
                 } else {
-                    log("⚠️ 未找到虚拟设备")
+                    log("⚠️ 未找到任何设备")
                 }
             }
         } catch {
