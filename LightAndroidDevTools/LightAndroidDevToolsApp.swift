@@ -205,11 +205,23 @@ struct ContentView: View {
                             .font(.caption)
                     }
                 }
-                
-                TextEditor(text: $logOutput)
-                    .font(.system(.caption, design: .monospaced))
+
+                ScrollViewReader { scrollView in
+                    ScrollView {
+                        Text(logOutput)
+                            .font(.system(size: 14, weight: .regular, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .id("LOG_END") // 用于滚动定位
+                    }
                     .background(Color(.textBackgroundColor))
                     .border(.gray.opacity(0.3), width: 1)
+                    .onChange(of: logOutput) {
+                        // 每次日志更新时滚动到底部
+                        withAnimation(.linear(duration: 0.1)) {
+                            scrollView.scrollTo("LOG_END", anchor: .bottom)
+                        }
+                    }
+                }
             }
             .padding(16)
         }
@@ -500,12 +512,59 @@ struct ContentView: View {
     private func installAPK() {
         guard !projectPath.isEmpty else { return }
         isRunning = true
-        
+
         DispatchQueue.global().async {
-            let gradleTask = buildType == "debug" ? "installDebug" : "installRelease"
-            executeCommand("cd \(projectPath) && ./gradlew \(gradleTask)", label: "安装APK")
+            let adbPath = NSHomeDirectory() + "/Library/Android/sdk/platform-tools/adb"
+
+            if buildType == "debug" {
+                // Debug 模式仍使用 gradlew 安装
+                let gradleTask = "installDebug"
+                executeCommand("cd \(projectPath) && ./gradlew \(gradleTask)", label: "安装Debug APK")
+                return
+            }
+
+            // ✅ Release 模式：先编译再安装
+            let releaseApkDir = "\(projectPath)/\(selectedAppModule)/build/outputs/apk/release"
+            let cleanReleaseCmd = "rm -f \(releaseApkDir)/*.apk"
+            executeCommand(cleanReleaseCmd, label: "清理旧APK")
+            let assembleCmd = "cd \(projectPath) && ./gradlew :\(selectedAppModule):assembleRelease"
+            log("⚙️ 开始编译 Release APK...")
+            executeCommand(assembleCmd, label: "编译Release APK")
+
+            // 查找 Release APK 路径
+            let fileManager = FileManager.default
+
+            do {
+                let files = try fileManager.contentsOfDirectory(atPath: releaseApkDir)
+                    .filter { $0.hasSuffix(".apk") }
+                    .sorted { a, b in
+                        let aTime = (try? fileManager.attributesOfItem(atPath: "\(releaseApkDir)/\(a)")[.modificationDate] as? Date) ?? .distantPast
+                        let bTime = (try? fileManager.attributesOfItem(atPath: "\(releaseApkDir)/\(b)")[.modificationDate] as? Date) ?? .distantPast
+                        return aTime > bTime
+                    }
+
+                guard let apkName = files.first else {
+                    DispatchQueue.main.async {
+                        log("❌ 未找到 Release APK，请检查是否编译成功")
+                        isRunning = false
+                    }
+                    return
+                }
+
+                let apkPath = "\(releaseApkDir)/\(apkName)"
+                log("📦 找到 APK：\(apkPath)")
+                let installCmd = "\(adbPath) install -r \"\(apkPath)\""
+                executeCommand(installCmd, label: "安装Release APK")
+
+            } catch {
+                DispatchQueue.main.async {
+                    log("❌ 无法读取APK目录: \(error.localizedDescription)")
+                    isRunning = false
+                }
+            }
         }
     }
+
     
     private func executeCommand(_ command: String, label: String) {
         let androidHome = NSHomeDirectory() + "/Library/Android/sdk"
