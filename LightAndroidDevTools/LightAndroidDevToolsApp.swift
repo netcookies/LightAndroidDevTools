@@ -2,40 +2,52 @@ import SwiftUI
 
 @main
 struct LightAndroidDevToolsApp: App {
-    @State private var isCompactMode = false
-    
+    @State private var isCompactMode = UserDefaults.standard.bool(forKey: "isCompactMode")
+
     var body: some Scene {
         WindowGroup {
             ContentView(isCompactMode: $isCompactMode)
-                .onAppear {
-                    if let window = NSApplication.shared.windows.first {
+            .onAppear {
+                let compact = UserDefaults.standard.bool(forKey: "isCompactMode")
+                if let window = NSApplication.shared.windows.first {
+                    if (compact) {
+                        window.setContentSize(NSSize(width: 500, height: 85))
+                        window.level = .floating
+                    } else {
                         window.setContentSize(NSSize(width: 900, height: 650))
-                        // 添加置顶功能菜单
                         window.level = .normal
-                        window.standardWindowButton(.closeButton)?.target = NSApp
-                        window.standardWindowButton(.closeButton)?.action = #selector(NSApplication.terminate(_:))
                     }
+                    window.standardWindowButton(.closeButton)?.target = NSApp
+                    window.standardWindowButton(.closeButton)?.action = #selector(NSApplication.terminate(_:))
                 }
-                .onChange(of: isCompactMode) {
-                    if let window = NSApplication.shared.windows.first {
-                        if isCompactMode {
-                            window.setContentSize(NSSize(width: 400, height: 60))
-                            toggleWindowLevel()
-                        } else {
-                            window.setContentSize(NSSize(width: 900, height: 650))
-                            toggleWindowLevel()
+            }
+            .onChange(of: isCompactMode) {
+                UserDefaults.standard.set(isCompactMode, forKey: "isCompactMode")
+                if let window = NSApplication.shared.windows.first,
+                   let screen = window.screen ?? NSScreen.main {
+
+                    if isCompactMode {
+                        let newSize = NSSize(width: 500, height: 85)
+                        window.setContentSize(newSize)
+
+                        let screenFrame = screen.visibleFrame
+                        let x = screenFrame.maxX - newSize.width
+                        let y = screenFrame.maxY - newSize.height
+                        window.setFrameOrigin(NSPoint(x: x, y: y))
+                        window.level = .floating
+                    } else {
+                        let newSize = NSSize(width: 900, height: 650)
+                        window.setContentSize(newSize)
+
+                        if let screen = window.screen ?? NSScreen.main {
+                            let screenFrame = screen.visibleFrame
+                            let x = screenFrame.midX - newSize.width / 2
+                            let y = screenFrame.midY - newSize.height / 2
+                            window.setFrameOrigin(NSPoint(x: x, y: y))
                         }
+                        window.level = .normal
                     }
                 }
-        }
-    }
-    
-    private func toggleWindowLevel() {
-        if let window = NSApplication.shared.windows.first {
-            if window.level == .floating {
-                window.level = .normal
-            } else {
-                window.level = .floating
             }
         }
     }
@@ -47,12 +59,13 @@ struct ContentView: View {
     @State private var projectPath: String = ""
     @State private var buildType: String = "debug"
     @State private var isRunning = false
-    @State private var logOutput: String = "准备就绪\n"
+    @State private var logOutput: [LogLine] = [LogLine(text: "准备就绪")]
     @State private var selectedAppModule: String = "app"
     @Binding var isCompactMode: Bool
     @State private var detectedModules: [String] = []
     @State private var emulatorRunning = false
     @State private var emulatorCheckTimer: Timer?
+    @State private var isScanningWireless = false
     
     private let defaults = UserDefaults.standard
     private let projectPathKey = "projectPath"
@@ -60,10 +73,34 @@ struct ContentView: View {
     private let appModuleKey = "selectedAppModule"
     
     var body: some View {
-        if isCompactMode {
-            compactView
-        } else {
-            fullView
+        Group {
+            if isCompactMode {
+                compactView
+            } else {
+                fullView
+            }
+        }
+        .onAppear {
+            loadSettings()
+            refreshAVDList()
+            startEmulatorStatusCheck()
+        }
+        .onDisappear {
+            emulatorCheckTimer?.invalidate()
+            emulatorCheckTimer = nil
+        }
+        .onChange(of: isCompactMode) {
+            startEmulatorStatusCheck()
+        }
+        .onChange(of: projectPath) {
+            saveSettings()
+            detectModules()
+        }
+        .onChange(of: buildType) {
+            saveSettings()
+        }
+        .onChange(of: selectedAppModule) {
+            saveSettings()
         }
     }
     
@@ -134,6 +171,7 @@ struct ContentView: View {
                         Text("刷新设备")
                     }
                 }
+                
                 Button(action: startAVD) {
                     HStack {
                         Image(systemName: emulatorRunning ? "stop.circle.fill" : "play.fill")
@@ -189,6 +227,7 @@ struct ContentView: View {
                 Button(action: { isCompactMode = true }) {
                     Image(systemName: "sidebar.left")
                 }
+                .disabled(isRunning)
             }
             .padding(12)
             .background(Color(.controlBackgroundColor))
@@ -208,37 +247,26 @@ struct ContentView: View {
 
                 ScrollViewReader { scrollView in
                     ScrollView {
-                        Text(logOutput)
-                            .font(.system(size: 14, weight: .regular, design: .monospaced))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .id("LOG_END") // 用于滚动定位
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(logOutput) { line in
+                                Text(line.text)
+                                    .font(.system(size: 14, weight: .regular, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
                     }
                     .background(Color(.textBackgroundColor))
                     .border(.gray.opacity(0.3), width: 1)
                     .onChange(of: logOutput) {
-                        // 每次日志更新时滚动到底部
-                        withAnimation(.linear(duration: 0.1)) {
-                            scrollView.scrollTo("LOG_END", anchor: .bottom)
+                        if let last = logOutput.last {
+                            withAnimation(.linear(duration: 0.1)) {
+                                scrollView.scrollTo(last.id, anchor: .bottom)
+                            }
                         }
                     }
                 }
             }
             .padding(16)
-        }
-        .onAppear {
-            loadSettings()
-            refreshAVDList()
-            startEmulatorStatusCheck()
-        }
-        .onChange(of: projectPath) {
-            saveSettings()
-            detectModules()
-        }
-        .onChange(of: buildType) {
-            saveSettings()
-        }
-        .onChange(of: selectedAppModule) {
-            saveSettings()
         }
     }
     
@@ -301,11 +329,13 @@ struct ContentView: View {
                 }
                 .font(.caption)
                 .frame(width: 100)
+                .disabled(isRunning)
                 
                 Button(action: { isCompactMode = false }) {
                     Image(systemName: "sidebar.right")
                         .font(.system(size: 14))
                 }
+                .disabled(isRunning)
                 .help("展开")
             }
             .padding(8)
@@ -358,6 +388,11 @@ struct ContentView: View {
                 } else {
                     log("⚠️ 未找到任何设备")
                 }
+            }
+
+            DispatchQueue.global().async {
+                let adbPath = NSHomeDirectory() + "/Library/Android/sdk/platform-tools/adb"
+                refreshWirelessDevices(adbPath: adbPath)
             }
         } catch {
             log("❌ 错误：\(error.localizedDescription)")
@@ -429,11 +464,13 @@ struct ContentView: View {
     
     private func startEmulatorStatusCheck() {
         emulatorCheckTimer?.invalidate()
-        checkEmulatorStatus()
-        emulatorCheckTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            checkEmulatorStatus()
+        emulatorCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            self.checkEmulatorStatus()
         }
+        RunLoop.main.add(emulatorCheckTimer!, forMode: .common)
+        checkEmulatorStatus()
     }
+
     
     private func checkEmulatorStatus() {
         DispatchQueue.global().async {
@@ -458,9 +495,6 @@ struct ContentView: View {
                 DispatchQueue.main.async {
                     let isRunning = !output.isEmpty && output.contains("device") && !output.contains("offline")
                     emulatorRunning = isRunning
-                    if !isRunning {
-                        emulatorCheckTimer?.invalidate()
-                    }
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -469,13 +503,14 @@ struct ContentView: View {
             }
         }
     }
+
     
     private func buildProject() {
         guard !projectPath.isEmpty else { return }
         isRunning = true
         
         DispatchQueue.global().async {
-            executeCommand("cd \(projectPath) && ./gradlew build", label: "编译")
+            executeCommand("cd \(projectPath) && ./gradlew compileDebugSources", label: "编译")
         }
     }
     
@@ -517,13 +552,11 @@ struct ContentView: View {
             let adbPath = NSHomeDirectory() + "/Library/Android/sdk/platform-tools/adb"
 
             if buildType == "debug" {
-                // Debug 模式仍使用 gradlew 安装
                 let gradleTask = "installDebug"
                 executeCommand("cd \(projectPath) && ./gradlew \(gradleTask)", label: "安装Debug APK")
                 return
             }
 
-            // ✅ Release 模式：先编译再安装
             let releaseApkDir = "\(projectPath)/\(selectedAppModule)/build/outputs/apk/release"
             let cleanReleaseCmd = "rm -f \(releaseApkDir)/*.apk"
             executeCommand(cleanReleaseCmd, label: "清理旧APK")
@@ -531,7 +564,6 @@ struct ContentView: View {
             log("⚙️ 开始编译 Release APK...")
             executeCommand(assembleCmd, label: "编译Release APK")
 
-            // 查找 Release APK 路径
             let fileManager = FileManager.default
 
             do {
@@ -578,34 +610,32 @@ struct ContentView: View {
         task.standardOutput = pipe
         task.standardError = pipe
         
-        do {
-            try task.run()
-            
-            let fileHandle = pipe.fileHandleForReading
-            var outputData = Data()
-            
-            while task.isRunning {
-                let data = fileHandle.availableData
-                if data.count > 0 {
-                    outputData.append(data)
-                    if let output = String(data: outputData, encoding: .utf8) {
-                        DispatchQueue.main.async {
-                            logOutput = output
-                        }
+        // 使用 readabilityHandler 替代轮询
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty, let output = String(data: data, encoding: .utf8) {
+                let lines = output.split(separator: "\n").map(String.init)
+                DispatchQueue.main.async {
+                    logOutput.append(contentsOf: lines.map { LogLine(text: $0) })
+                    if logOutput.count > 3000 {
+                        logOutput.removeFirst(logOutput.count - 3000)
                     }
                 }
-                usleep(100000)
             }
-            
-            task.waitUntilExit()
-            
-            DispatchQueue.main.async {
-                if task.terminationStatus == 0 {
-                    log("✓ \(label) 完成")
-                } else {
-                    log("✗ \(label) 失败 (代码: \(task.terminationStatus))")
+        }
+        
+        do {
+            try task.run()
+            task.terminationHandler = { t in
+                DispatchQueue.main.async {
+                    if t.terminationStatus == 0 {
+                        log("✓ \(label) 完成")
+                    } else {
+                        log("✗ \(label) 失败 (代码: \(t.terminationStatus))")
+                    }
+                    isRunning = false
                 }
-                isRunning = false
+                pipe.fileHandleForReading.readabilityHandler = nil
             }
         } catch {
             DispatchQueue.main.async {
@@ -614,14 +644,23 @@ struct ContentView: View {
             }
         }
     }
+
+
     
     private func log(_ message: String) {
-        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-        logOutput.append("[\(timestamp)] \(message)\n")
+        DispatchQueue.main.async {
+            let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+            let line = LogLine(text: "[\(timestamp)] \(message)")
+            logOutput.append(line)
+            if logOutput.count > 3000 {
+                logOutput.removeFirst(logOutput.count - 3000)
+            }
+        }
     }
+
     
     private func clearLog() {
-        logOutput = ""
+        logOutput.removeAll()
     }
     
     private func getPackageName() -> String? {
@@ -686,37 +725,192 @@ struct ContentView: View {
     }
     
     private func detectModules() {
-        guard !projectPath.isEmpty else { return }
-        
+        guard !projectPath.isEmpty else {
+            log("⚠️ 项目路径为空，无法扫描模块")
+            return
+        }
+
         let fileManager = FileManager.default
         do {
-            let contents = try fileManager.contentsOfDirectory(atPath: projectPath)
+            let projectURL = URL(fileURLWithPath: projectPath)
+            let contents = try fileManager.contentsOfDirectory(atPath: projectURL.path)
             var modules: [String] = []
-            
+
+            log("🔍 开始扫描模块目录：\(projectPath)")
+
             for item in contents {
-                let fullPath = projectPath + "/" + item
+                let fullURL = projectURL.appendingPathComponent(item)
                 var isDir: ObjCBool = false
-                
-                if fileManager.fileExists(atPath: fullPath, isDirectory: &isDir), isDir.boolValue {
-                    let buildGradle = fullPath + "/build.gradle"
-                    let buildGradleKts = fullPath + "/build.gradle.kts"
-                    
-                    if fileManager.fileExists(atPath: buildGradle) || fileManager.fileExists(atPath: buildGradleKts) {
+
+                if fileManager.fileExists(atPath: fullURL.path, isDirectory: &isDir), isDir.boolValue {
+                    let buildGradleURL = fullURL.appendingPathComponent("build.gradle")
+                    let buildGradleKtsURL = fullURL.appendingPathComponent("build.gradle.kts")
+
+                    let hasGradle = fileManager.fileExists(atPath: buildGradleURL.path)
+                    let hasGradleKts = fileManager.fileExists(atPath: buildGradleKtsURL.path)
+
+                    print("\(item): build.gradle=\(hasGradle), build.gradle.kts=\(hasGradleKts)")
+
+                    if hasGradle || hasGradleKts {
                         modules.append(item)
+                        log("✓ 发现模块: \(item)")
                     }
                 }
             }
-            
+
             if !modules.isEmpty {
                 detectedModules = modules.sorted()
                 if !detectedModules.contains(selectedAppModule) {
                     selectedAppModule = detectedModules[0]
                 }
+            } else {
+                log("⚠️ 未找到任何模块")
+                detectedModules = []
             }
         } catch {
             log("⚠️ 无法扫描模块: \(error.localizedDescription)")
+            detectedModules = []
         }
     }
+    
+    // 获取离线的无线设备 IP
+    private func getOfflineWirelessDevices(adbPath: String) -> [String] {
+        let task = Process()
+        task.launchPath = "/bin/bash"
+        task.arguments = ["-c", "\(adbPath) devices | grep 'offline' | awk '{print $1}'"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        try? task.run()
+        task.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    }
+
+    // 修改 scanWirelessDevices 版本，带回调返回新设备列表
+    private func scanWirelessDevices(completion: @escaping ([(String, String)]) -> Void) {
+        DispatchQueue.global().async {
+            let ipTask = Process()
+            ipTask.launchPath = "/bin/bash"
+            ipTask.arguments = ["-c", "ipconfig getifaddr en0 || ipconfig getifaddr en1 || ipconfig getifaddr en2"]
+            let ipPipe = Pipe()
+            ipTask.standardOutput = ipPipe
+            try? ipTask.run()
+            ipTask.waitUntilExit()
+
+            guard let data = try? ipPipe.fileHandleForReading.readToEnd(),
+                  let ip = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !ip.isEmpty else {
+                DispatchQueue.main.async { log("❌ 无法获取本地 IP") }
+                return
+            }
+
+            let prefix = ip.split(separator: ".").dropLast().joined(separator: ".")
+            let nmapCmd = "nmap -p 37000-49000 --open --min-rate 5000 --max-retries 2 --host-timeout 5s -oG - \(prefix).0/24 | awk '/open/{print $2, $5}'"
+            let nmapTask = Process()
+            nmapTask.launchPath = "/bin/bash"
+            nmapTask.arguments = ["-c", nmapCmd]
+            let pipe = Pipe()
+            nmapTask.standardOutput = pipe
+            nmapTask.standardError = pipe
+            try? nmapTask.run()
+            nmapTask.waitUntilExit()
+
+            guard let output = try? pipe.fileHandleForReading.readToEnd(),
+                  let text = String(data: output, encoding: .utf8),
+                  !text.isEmpty else {
+                DispatchQueue.main.async { log("❌ 未发现开放的无线调试端口") }
+                completion([])
+                return
+            }
+
+            let lines = text.split(separator: "\n")
+            var devices: [(String, String)] = []
+            for line in lines {
+                let parts = line.split(separator: " ")
+                if parts.count == 2 {
+                    let ip = String(parts[0])
+                    let port = parts[1].replacingOccurrences(of: "/open/tcp//", with: "")
+                    devices.append((ip, port))
+                }
+            }
+
+            DispatchQueue.main.async { completion(devices) }
+        }
+    }
+    
+    private func refreshWirelessDevices(adbPath: String) {
+        guard !isScanningWireless else {
+            log("⚠️ 正在扫描无线设备，请稍后")
+            return
+        }
+        
+        isScanningWireless = true
+        
+        DispatchQueue.global().async {
+            let disconnectedDevices = getOfflineWirelessDevices(adbPath: adbPath)
+            
+            // 断开 offline 设备
+            for ip in disconnectedDevices {
+                let disconnectCmd = "\(adbPath) disconnect \(ip)"
+                _ = try? Process.run(URL(fileURLWithPath: "/bin/bash"), arguments: ["-c", disconnectCmd])
+                DispatchQueue.main.async { log("⚠️ 已断开离线设备: \(ip)") }
+            }
+            
+            // 扫描新无线设备
+            scanWirelessDevices { devices in
+                guard !devices.isEmpty else {
+                    DispatchQueue.main.async { self.isScanningWireless = false }
+                    return
+                }
+
+                // 依次弹出非阻塞选择
+                func showNextDevice(_ index: Int) {
+                    guard index < devices.count else {
+                        self.isScanningWireless = false
+                        return
+                    }
+                    
+                    let (ip, port) = devices[index]
+                    
+                    DispatchQueue.main.async {
+                        let alert = NSAlert()
+                        alert.messageText = "发现新无线设备"
+                        alert.informativeText = "是否连接 \(ip):\(port)？"
+                        alert.addButton(withTitle: "连接")
+                        alert.addButton(withTitle: "取消")
+                        
+                        // 非阻塞显示
+                        if let window = NSApplication.shared.windows.first {
+                            alert.beginSheetModal(for: window) { response in
+                                if response == .alertFirstButtonReturn {
+                                    let connectCmd = "\(adbPath) connect \(ip):\(port)"
+                                    DispatchQueue.global().async {
+                                        _ = try? Process.run(URL(fileURLWithPath: "/bin/bash"), arguments: ["-c", connectCmd])
+                                        DispatchQueue.main.async { log("✅ 已连接 \(ip):\(port)") }
+                                    }
+                                } else {
+                                    DispatchQueue.main.async { log("⚠️ 忽略 \(ip):\(port)") }
+                                }
+                                // 弹出下一个
+                                showNextDevice(index + 1)
+                            }
+                        } else {
+                            // 如果没有 window，直接跳过
+                            showNextDevice(index + 1)
+                        }
+                    }
+                }
+
+                showNextDevice(0)
+            }
+        }
+    }
+}
+
+struct LogLine: Identifiable, Hashable {
+    let id = UUID()
+    let text: String
 }
 
 #Preview {
