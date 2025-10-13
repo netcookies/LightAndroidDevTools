@@ -129,7 +129,10 @@ struct ContentView: View {
             
             HStack(spacing: 12) {
                 Button(action: refreshAVDList) {
-                    Text("刷新设备")
+                    HStack {
+                        Image(systemName: "arrow.clockwise")
+                        Text("刷新设备")
+                    }
                 }
                 Button(action: startAVD) {
                     HStack {
@@ -154,6 +157,14 @@ struct ContentView: View {
                     }
                 }
                 .disabled(projectPath.isEmpty || selectedAVD == nil || isRunning)
+                
+                Button(action: buildAPK) {
+                    HStack {
+                        Image(systemName: "shippingbox.fill")
+                        Text("编译APK")
+                    }
+                }
+                .disabled(projectPath.isEmpty || isRunning)
                 
                 Button(action: installAPK) {
                     HStack {
@@ -235,12 +246,26 @@ struct ContentView: View {
                 .disabled(selectedAVD == nil || isRunning)
                 .help(emulatorRunning ? "关闭模拟器" : "启动模拟器")
                 
+                Button(action: buildProject) {
+                    Image(systemName: "hammer.fill")
+                        .font(.system(size: 14))
+                }
+                .disabled(projectPath.isEmpty || isRunning)
+                .help("编译")
+                
                 Button(action: buildAndRun) {
                     Image(systemName: "play.circle.fill")
                         .font(.system(size: 14))
                 }
                 .disabled(projectPath.isEmpty || selectedAVD == nil || isRunning)
                 .help("编译并运行")
+                
+                Button(action: buildAPK) {
+                    Image(systemName: "shippingbox.fill")
+                        .font(.system(size: 14))
+                }
+                .disabled(projectPath.isEmpty || isRunning)
+                .help("编译APK")
                 
                 Button(action: installAPK) {
                     Image(systemName: "arrow.down.circle.fill")
@@ -452,6 +477,16 @@ struct ContentView: View {
                     isRunning = false
                 }
             }
+        }
+    }
+    
+    private func buildAPK() {
+        guard !projectPath.isEmpty else { return }
+        isRunning = true
+        
+        DispatchQueue.global().async {
+            let gradleTask = buildType == "debug" ? "assembleDebug" : "assembleRelease"
+            executeCommand("cd \(projectPath) && ./gradlew \(gradleTask)", label: "编译APK")
         }
     }
     
