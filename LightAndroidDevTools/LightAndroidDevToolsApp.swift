@@ -66,6 +66,11 @@ struct ContentView: View {
     @State private var emulatorRunning = false
     @State private var emulatorCheckTimer: Timer?
     @State private var isScanningWireless = false
+    @State private var activeProcesses: Set<UUID> = []  // ✅ 追踪活跃进程
+    
+    // ✅ 日志配置
+    private let maxLogLines = 1000
+    private let logTrimThreshold = 1200
     
     private let defaults = UserDefaults.standard
     private let projectPathKey = "projectPath"
@@ -86,8 +91,8 @@ struct ContentView: View {
             startEmulatorStatusCheck()
         }
         .onDisappear {
-            emulatorCheckTimer?.invalidate()
-            emulatorCheckTimer = nil
+            cleanupTimer()
+            cleanupAllProcesses()
         }
         .onChange(of: isCompactMode) {
             startEmulatorStatusCheck()
@@ -102,6 +107,16 @@ struct ContentView: View {
         .onChange(of: selectedAppModule) {
             saveSettings()
         }
+    }
+    
+    private func cleanupTimer() {
+        emulatorCheckTimer?.invalidate()
+        emulatorCheckTimer = nil
+    }
+    
+    // ✅ 清理所有活跃进程的 handler
+    private func cleanupAllProcesses() {
+        activeProcesses.removeAll()
     }
     
     var fullView: some View {
@@ -312,13 +327,11 @@ struct ContentView: View {
         
         @State private var visibleFrames: [UUID: CGRect] = [:]
         @State private var scrollViewSize: CGSize = .zero
-        @State private var contentSize: CGSize = .zero
-        @State private var scrollOffset: CGPoint = .zero
         
         var body: some View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("日志输出")
+                    Text("日志输出 (\(logOutput.count) 行)")
                         .font(.caption)
                         .foregroundColor(.gray)
                     Spacer()
@@ -331,7 +344,7 @@ struct ContentView: View {
                 GeometryReader { outerGeo in
                     ScrollViewReader { scrollReader in
                         ScrollView {
-                            VStack(alignment: .leading, spacing: 2) {
+                            LazyVStack(alignment: .leading, spacing: 2) {
                                 ForEach(logOutput) { line in
                                     Text(line.text)
                                         .font(.system(size: 14, weight: .regular, design: .monospaced))
@@ -345,42 +358,28 @@ struct ContentView: View {
                                                 )
                                             }
                                         )
-                                        .id(line.id)  // ✅ 添加 id 以便滚动
+                                        .id(line.id)
                                 }
                             }
-                            .background(
-                                GeometryReader { geo in
-                                    Color.clear.preference(
-                                        key: ContentSizeKey.self,
-                                        value: geo.size
-                                    )
-                                }
-                            )
+                            .padding(.horizontal, 4)
                         }
                         .coordinateSpace(name: "scrollView")
                         .onPreferenceChange(LineFrameKey.self) { visibleFrames = $0 }
-                        .onPreferenceChange(ContentSizeKey.self) { contentSize = $0 }
-                        .onChange(of: logOutput.count) { _ in
-                            // ✅ 日志更新时自动滚动到底部
+                        .onChange(of: logOutput.count) {
                             if let lastLine = logOutput.last {
-                                withAnimation {
+                                withAnimation(.easeOut(duration: 0.2)) {
                                     scrollReader.scrollTo(lastLine.id, anchor: .bottom)
                                 }
                             }
                         }
                         .background(
                             GeometryReader { geo in
-                                let currentSize = geo.size
                                 Color.clear
                                     .onAppear {
-                                        scrollViewSize = currentSize
+                                        scrollViewSize = geo.size
                                     }
-                                    .onChange(of: currentSize) { newSize in
+                                    .onChange(of: geo.size) { _, newSize in
                                         scrollViewSize = newSize
-                                        // ✅ 窗口大小改变时，强制刷新 frame 计算
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                            // 触发视图重新布局，确保 visibleFrames 更新
-                                        }
                                     }
                             }
                         )
@@ -397,7 +396,6 @@ struct ContentView: View {
             NSApp.mainWindow?.makeKeyAndOrderFront(nil)
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                // ✅ 使用最新的 scrollViewSize 构造可见区域
                 let visibleRect = CGRect(
                     x: 0,
                     y: 0,
@@ -405,42 +403,20 @@ struct ContentView: View {
                     height: scrollViewSize.height
                 )
                 
-                print("📐 可见区域: \(visibleRect)")
-                print("📦 Frame 数据: \(visibleFrames.count) 条")
-                
                 let visibleLines = logOutput.filter { line in
                     if let frame = visibleFrames[line.id] {
-                        let isVisible = visibleRect.intersects(frame)
-                        if isVisible {
-                            print("✅ 可见: \(line.text.prefix(50)) - Frame: \(frame)")
-                        }
-                        return isVisible
+                        return visibleRect.intersects(frame)
                     }
                     return false
                 }
 
                 let textToCopy = visibleLines.map(\.text).joined(separator: "\n")
-                guard !textToCopy.isEmpty else {
-                    print("⚠️ 没有可见内容被捕获，复制中止")
-                    print("   scrollViewSize: \(scrollViewSize)")
-                    print("   visibleFrames count: \(visibleFrames.count)")
-                    return
-                }
+                guard !textToCopy.isEmpty else { return }
 
                 let pb = NSPasteboard.general
                 pb.clearContents()
-                let ok = pb.setString(textToCopy, forType: NSPasteboard.PasteboardType.string)
-                print("✂️ 剪贴板写入结果: \(ok ? "成功" : "失败")")
-                print("📋 复制了 \(visibleLines.count) 行，共 \(logOutput.count) 行")
+                _ = pb.setString(textToCopy, forType: .string)
             }
-        }
-    }
-
-    // ✅ 新增 PreferenceKey
-    struct ContentSizeKey: PreferenceKey {
-        static var defaultValue: CGSize = .zero
-        static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-            value = nextValue()
         }
     }
     
@@ -565,14 +541,14 @@ struct ContentView: View {
     }
     
     private func startEmulatorStatusCheck() {
-        emulatorCheckTimer?.invalidate()
+        cleanupTimer()
+        
         emulatorCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            self.checkEmulatorStatus()
+            checkEmulatorStatus()
         }
         RunLoop.main.add(emulatorCheckTimer!, forMode: .common)
         checkEmulatorStatus()
     }
-
     
     private func checkEmulatorStatus() {
         DispatchQueue.global().async {
@@ -605,7 +581,6 @@ struct ContentView: View {
             }
         }
     }
-
     
     private func buildProject() {
         guard !projectPath.isEmpty else { return }
@@ -698,10 +673,11 @@ struct ContentView: View {
             }
         }
     }
-
     
+    // ✅ 优化：使用 UUID 追踪进程，避免闭包捕获
     private func executeCommand(_ command: String, label: String) {
         let androidHome = NSHomeDirectory() + "/Library/Android/sdk"
+        let processId = UUID()
         
         let task = Process()
         task.launchPath = "/bin/bash"
@@ -712,16 +688,20 @@ struct ContentView: View {
         task.standardOutput = pipe
         task.standardError = pipe
         
-        // 使用 readabilityHandler 替代轮询
-        pipe.fileHandleForReading.readabilityHandler = { handle in
+        let fileHandle = pipe.fileHandleForReading
+        
+        // ✅ 注册进程
+        DispatchQueue.main.async {
+            activeProcesses.insert(processId)
+        }
+        
+        // ✅ 使用捕获列表，但不用 weak（因为是 struct）
+        fileHandle.readabilityHandler = { handle in
             let data = handle.availableData
             if !data.isEmpty, let output = String(data: data, encoding: .utf8) {
                 let lines = output.split(separator: "\n").map(String.init)
                 DispatchQueue.main.async {
-                    logOutput.append(contentsOf: lines.map { LogLine(text: $0) })
-                    if logOutput.count > 3000 {
-                        logOutput.removeFirst(logOutput.count - 3000)
-                    }
+                    self.appendLogs(lines)
                 }
             }
         }
@@ -729,7 +709,13 @@ struct ContentView: View {
         do {
             try task.run()
             task.terminationHandler = { t in
+                // ✅ 立即清理 handler
+                fileHandle.readabilityHandler = nil
+                
                 DispatchQueue.main.async {
+                    // 移除进程追踪
+                    activeProcesses.remove(processId)
+                    
                     if t.terminationStatus == 0 {
                         log("✓ \(label) 完成")
                     } else {
@@ -737,32 +723,37 @@ struct ContentView: View {
                     }
                     isRunning = false
                 }
-                pipe.fileHandleForReading.readabilityHandler = nil
             }
         } catch {
+            fileHandle.readabilityHandler = nil
             DispatchQueue.main.async {
+                activeProcesses.remove(processId)
                 log("❌ 执行失败：\(error.localizedDescription)")
                 isRunning = false
             }
         }
     }
-
-
+    
+    private func appendLogs(_ lines: [String]) {
+        logOutput.append(contentsOf: lines.map { LogLine(text: $0) })
+        
+        if logOutput.count > logTrimThreshold {
+            let removeCount = logOutput.count - maxLogLines
+            logOutput.removeFirst(removeCount)
+        }
+    }
     
     private func log(_ message: String) {
         DispatchQueue.main.async {
             let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
             let line = LogLine(text: "[\(timestamp)] \(message)")
             logOutput.append(line)
-            if logOutput.count > 3000 {
-                logOutput.removeFirst(logOutput.count - 3000)
+            
+            if logOutput.count > logTrimThreshold {
+                let removeCount = logOutput.count - maxLogLines
+                logOutput.removeFirst(removeCount)
             }
         }
-    }
-
-    
-    private func clearLog() {
-        logOutput.removeAll()
     }
     
     private func getPackageName() -> String? {
@@ -851,8 +842,6 @@ struct ContentView: View {
                     let hasGradle = fileManager.fileExists(atPath: buildGradleURL.path)
                     let hasGradleKts = fileManager.fileExists(atPath: buildGradleKtsURL.path)
 
-                    print("\(item): build.gradle=\(hasGradle), build.gradle.kts=\(hasGradleKts)")
-
                     if hasGradle || hasGradleKts {
                         modules.append(item)
                         log("✓ 发现模块: \(item)")
@@ -875,7 +864,6 @@ struct ContentView: View {
         }
     }
     
-    // 获取离线的无线设备 IP
     private func getOfflineWirelessDevices(adbPath: String) -> [String] {
         let task = Process()
         task.launchPath = "/bin/bash"
@@ -889,7 +877,6 @@ struct ContentView: View {
         return output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     }
 
-    // 修改 scanWirelessDevices 版本，带回调返回新设备列表
     private func scanWirelessDevices(completion: @escaping ([(String, String)]) -> Void) {
         DispatchQueue.global().async {
             let ipTask = Process()
@@ -903,7 +890,7 @@ struct ContentView: View {
             guard let data = try? ipPipe.fileHandleForReading.readToEnd(),
                   let ip = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !ip.isEmpty else {
-                DispatchQueue.main.async { log("❌ 无法获取本地 IP") }
+                DispatchQueue.main.async { self.log("❌ 无法获取本地 IP") }
                 return
             }
 
@@ -921,7 +908,7 @@ struct ContentView: View {
             guard let output = try? pipe.fileHandleForReading.readToEnd(),
                   let text = String(data: output, encoding: .utf8),
                   !text.isEmpty else {
-                DispatchQueue.main.async { log("❌ 未发现开放的无线调试端口") }
+                DispatchQueue.main.async { self.log("❌ 未发现开放的无线调试端口") }
                 completion([])
                 return
             }
@@ -950,23 +937,20 @@ struct ContentView: View {
         isScanningWireless = true
         
         DispatchQueue.global().async {
-            let disconnectedDevices = getOfflineWirelessDevices(adbPath: adbPath)
+            let disconnectedDevices = self.getOfflineWirelessDevices(adbPath: adbPath)
             
-            // 断开 offline 设备
             for ip in disconnectedDevices {
                 let disconnectCmd = "\(adbPath) disconnect \(ip)"
                 _ = try? Process.run(URL(fileURLWithPath: "/bin/bash"), arguments: ["-c", disconnectCmd])
-                DispatchQueue.main.async { log("⚠️ 已断开离线设备: \(ip)") }
+                DispatchQueue.main.async { self.log("⚠️ 已断开离线设备: \(ip)") }
             }
             
-            // 扫描新无线设备
-            scanWirelessDevices { devices in
+            self.scanWirelessDevices { devices in
                 guard !devices.isEmpty else {
                     DispatchQueue.main.async { self.isScanningWireless = false }
                     return
                 }
 
-                // 依次弹出非阻塞选择
                 func showNextDevice(_ index: Int) {
                     guard index < devices.count else {
                         self.isScanningWireless = false
@@ -982,23 +966,20 @@ struct ContentView: View {
                         alert.addButton(withTitle: "连接")
                         alert.addButton(withTitle: "取消")
                         
-                        // 非阻塞显示
                         if let window = NSApplication.shared.windows.first {
                             alert.beginSheetModal(for: window) { response in
                                 if response == .alertFirstButtonReturn {
                                     let connectCmd = "\(adbPath) connect \(ip):\(port)"
                                     DispatchQueue.global().async {
                                         _ = try? Process.run(URL(fileURLWithPath: "/bin/bash"), arguments: ["-c", connectCmd])
-                                        DispatchQueue.main.async { log("✅ 已连接 \(ip):\(port)") }
+                                        DispatchQueue.main.async { self.log("✅ 已连接 \(ip):\(port)") }
                                     }
                                 } else {
-                                    DispatchQueue.main.async { log("⚠️ 忽略 \(ip):\(port)") }
+                                    DispatchQueue.main.async { self.log("⚠️ 忽略 \(ip):\(port)") }
                                 }
-                                // 弹出下一个
                                 showNextDevice(index + 1)
                             }
                         } else {
-                            // 如果没有 window，直接跳过
                             showNextDevice(index + 1)
                         }
                     }
@@ -1014,7 +995,6 @@ struct LogLine: Identifiable, Hashable {
     let id = UUID()
     let text: String
     
-    // ✅ 实现 Hashable
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
@@ -1029,16 +1009,4 @@ struct LineFrameKey: PreferenceKey {
     static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
         value.merge(nextValue()) { $1 }
     }
-}
-
-// ✅ 新增 PreferenceKey
-struct ContentSizeKey: PreferenceKey {
-    static var defaultValue: CGSize = .zero
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-        value = nextValue()
-    }
-}
-
-#Preview {
-    ContentView(isCompactMode: .constant(false))
 }
