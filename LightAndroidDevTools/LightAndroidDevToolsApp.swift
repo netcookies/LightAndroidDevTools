@@ -227,46 +227,12 @@ struct ContentView: View {
                 Button(action: { isCompactMode = true }) {
                     Image(systemName: "sidebar.left")
                 }
-                .disabled(isRunning)
             }
             .padding(12)
             .background(Color(.controlBackgroundColor))
             .border(.gray.opacity(0.3), width: 1)
             
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("日志输出")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                    Spacer()
-                    Button(action: clearLog) {
-                        Text("清空")
-                            .font(.caption)
-                    }
-                }
-
-                ScrollViewReader { scrollView in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(logOutput) { line in
-                                Text(line.text)
-                                    .font(.system(size: 14, weight: .regular, design: .monospaced))
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        }
-                    }
-                    .background(Color(.textBackgroundColor))
-                    .border(.gray.opacity(0.3), width: 1)
-                    .onChange(of: logOutput) {
-                        if let last = logOutput.last {
-                            withAnimation(.linear(duration: 0.1)) {
-                                scrollView.scrollTo(last.id, anchor: .bottom)
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(16)
+            LogOutputView(logOutput: $logOutput)
         }
     }
     
@@ -335,10 +301,146 @@ struct ContentView: View {
                     Image(systemName: "sidebar.right")
                         .font(.system(size: 14))
                 }
-                .disabled(isRunning)
                 .help("展开")
             }
             .padding(8)
+        }
+    }
+    
+    struct LogOutputView: View {
+        @Binding var logOutput: [LogLine]
+        
+        @State private var visibleFrames: [UUID: CGRect] = [:]
+        @State private var scrollViewSize: CGSize = .zero
+        @State private var contentSize: CGSize = .zero
+        @State private var scrollOffset: CGPoint = .zero
+        
+        var body: some View {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("日志输出")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                    Spacer()
+                    Button("复制当前显示内容", action: copyVisibleLogs)
+                        .font(.caption)
+                    Button("清空", action: { logOutput.removeAll() })
+                        .font(.caption)
+                }
+
+                GeometryReader { outerGeo in
+                    ScrollViewReader { scrollReader in
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(logOutput) { line in
+                                    Text(line.text)
+                                        .font(.system(size: 14, weight: .regular, design: .monospaced))
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .textSelection(.enabled)
+                                        .background(
+                                            GeometryReader { geo in
+                                                Color.clear.preference(
+                                                    key: LineFrameKey.self,
+                                                    value: [line.id: geo.frame(in: .named("scrollView"))]
+                                                )
+                                            }
+                                        )
+                                        .id(line.id)  // ✅ 添加 id 以便滚动
+                                }
+                            }
+                            .background(
+                                GeometryReader { geo in
+                                    Color.clear.preference(
+                                        key: ContentSizeKey.self,
+                                        value: geo.size
+                                    )
+                                }
+                            )
+                        }
+                        .coordinateSpace(name: "scrollView")
+                        .onPreferenceChange(LineFrameKey.self) { visibleFrames = $0 }
+                        .onPreferenceChange(ContentSizeKey.self) { contentSize = $0 }
+                        .onChange(of: logOutput.count) { _ in
+                            // ✅ 日志更新时自动滚动到底部
+                            if let lastLine = logOutput.last {
+                                withAnimation {
+                                    scrollReader.scrollTo(lastLine.id, anchor: .bottom)
+                                }
+                            }
+                        }
+                        .background(
+                            GeometryReader { geo in
+                                let currentSize = geo.size
+                                Color.clear
+                                    .onAppear {
+                                        scrollViewSize = currentSize
+                                    }
+                                    .onChange(of: currentSize) { newSize in
+                                        scrollViewSize = newSize
+                                        // ✅ 窗口大小改变时，强制刷新 frame 计算
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                            // 触发视图重新布局，确保 visibleFrames 更新
+                                        }
+                                    }
+                            }
+                        )
+                        .background(Color(.textBackgroundColor))
+                        .border(.gray.opacity(0.3), width: 1)
+                    }
+                }
+            }
+            .padding(16)
+        }
+        
+        private func copyVisibleLogs() {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            NSApp.mainWindow?.makeKeyAndOrderFront(nil)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                // ✅ 使用最新的 scrollViewSize 构造可见区域
+                let visibleRect = CGRect(
+                    x: 0,
+                    y: 0,
+                    width: scrollViewSize.width,
+                    height: scrollViewSize.height
+                )
+                
+                print("📐 可见区域: \(visibleRect)")
+                print("📦 Frame 数据: \(visibleFrames.count) 条")
+                
+                let visibleLines = logOutput.filter { line in
+                    if let frame = visibleFrames[line.id] {
+                        let isVisible = visibleRect.intersects(frame)
+                        if isVisible {
+                            print("✅ 可见: \(line.text.prefix(50)) - Frame: \(frame)")
+                        }
+                        return isVisible
+                    }
+                    return false
+                }
+
+                let textToCopy = visibleLines.map(\.text).joined(separator: "\n")
+                guard !textToCopy.isEmpty else {
+                    print("⚠️ 没有可见内容被捕获，复制中止")
+                    print("   scrollViewSize: \(scrollViewSize)")
+                    print("   visibleFrames count: \(visibleFrames.count)")
+                    return
+                }
+
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                let ok = pb.setString(textToCopy, forType: NSPasteboard.PasteboardType.string)
+                print("✂️ 剪贴板写入结果: \(ok ? "成功" : "失败")")
+                print("📋 复制了 \(visibleLines.count) 行，共 \(logOutput.count) 行")
+            }
+        }
+    }
+
+    // ✅ 新增 PreferenceKey
+    struct ContentSizeKey: PreferenceKey {
+        static var defaultValue: CGSize = .zero
+        static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+            value = nextValue()
         }
     }
     
@@ -911,6 +1013,30 @@ struct ContentView: View {
 struct LogLine: Identifiable, Hashable {
     let id = UUID()
     let text: String
+    
+    // ✅ 实现 Hashable
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+    
+    static func == (lhs: LogLine, rhs: LogLine) -> Bool {
+        lhs.id == rhs.id
+    }
+}
+
+struct LineFrameKey: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] = [:]
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
+// ✅ 新增 PreferenceKey
+struct ContentSizeKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
+    }
 }
 
 #Preview {
