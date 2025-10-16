@@ -53,6 +53,12 @@ struct LightAndroidDevToolsApp: App {
     }
 }
 
+enum LogType {
+    case normal
+    case error
+    case success
+}
+
 struct ContentView: View {
     @State private var avdList: [String] = []
     @State private var selectedAVD: String?
@@ -66,9 +72,10 @@ struct ContentView: View {
     @State private var emulatorRunning = false
     @State private var emulatorCheckTimer: Timer?
     @State private var isScanningWireless = false
-    @State private var activeProcesses: Set<UUID> = []  // ✅ 追踪活跃进程
+    @State private var activeProcesses: Set<UUID> = []
+    @State private var lastTaskSuccess: Bool? = nil
+    @State private var scrollToEnd = false
     
-    // ✅ 日志配置
     private let maxLogLines = 1000
     private let logTrimThreshold = 1200
     
@@ -96,6 +103,9 @@ struct ContentView: View {
         }
         .onChange(of: isCompactMode) {
             startEmulatorStatusCheck()
+            if !isCompactMode {
+                scrollToEnd = true
+            }
         }
         .onChange(of: projectPath) {
             saveSettings()
@@ -114,7 +124,6 @@ struct ContentView: View {
         emulatorCheckTimer = nil
     }
     
-    // ✅ 清理所有活跃进程的 handler
     private func cleanupAllProcesses() {
         activeProcesses.removeAll()
     }
@@ -193,7 +202,7 @@ struct ContentView: View {
                         Text(emulatorRunning ? "关闭模拟器" : "启动模拟器")
                     }
                 }
-                .disabled(selectedAVD == nil || isRunning)
+                .disabled(selectedAVD == nil)
                 
                 Button(action: buildProject) {
                     HStack {
@@ -237,6 +246,15 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundColor(.gray)
                     }
+                } else if let success = lastTaskSuccess {
+                    HStack(spacing: 6) {
+                        Image(systemName: success ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundColor(success ? .green : .red)
+                            .font(.system(size: 16))
+                        Text(success ? "完成" : "失败")
+                            .font(.caption)
+                            .foregroundColor(success ? .green : .red)
+                    }
                 }
                 
                 Button(action: { isCompactMode = true }) {
@@ -247,7 +265,7 @@ struct ContentView: View {
             .background(Color(.controlBackgroundColor))
             .border(.gray.opacity(0.3), width: 1)
             
-            LogOutputView(logOutput: $logOutput)
+            LogOutputView(logOutput: $logOutput, scrollToEnd: $scrollToEnd)
         }
     }
     
@@ -264,7 +282,7 @@ struct ContentView: View {
                     Image(systemName: emulatorRunning ? "stop.circle.fill" : "play.fill")
                         .font(.system(size: 14))
                 }
-                .disabled(selectedAVD == nil || isRunning)
+                .disabled(selectedAVD == nil)
                 .help(emulatorRunning ? "关闭模拟器" : "启动模拟器")
                 
                 Button(action: buildProject) {
@@ -324,6 +342,7 @@ struct ContentView: View {
     
     struct LogOutputView: View {
         @Binding var logOutput: [LogLine]
+        @Binding var scrollToEnd: Bool
         
         @State private var visibleFrames: [UUID: CGRect] = [:]
         @State private var scrollViewSize: CGSize = .zero
@@ -348,6 +367,7 @@ struct ContentView: View {
                                 ForEach(logOutput) { line in
                                     Text(line.text)
                                         .font(.system(size: 14, weight: .regular, design: .monospaced))
+                                        .foregroundColor(colorForLogType(line.type))
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                         .textSelection(.enabled)
                                         .background(
@@ -361,7 +381,7 @@ struct ContentView: View {
                                         .id(line.id)
                                 }
                             }
-                            .padding(.horizontal, 4)
+                            .padding(12)
                         }
                         .coordinateSpace(name: "scrollView")
                         .onPreferenceChange(LineFrameKey.self) { visibleFrames = $0 }
@@ -369,6 +389,16 @@ struct ContentView: View {
                             if let lastLine = logOutput.last {
                                 withAnimation(.easeOut(duration: 0.2)) {
                                     scrollReader.scrollTo(lastLine.id, anchor: .bottom)
+                                }
+                            }
+                        }
+                        .onChange(of: scrollToEnd) {
+                            if scrollToEnd, let lastLine = logOutput.last {
+                                withAnimation(.easeOut(duration: 0.3)) {
+                                    scrollReader.scrollTo(lastLine.id, anchor: .bottom)
+                                }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                    scrollToEnd = false
                                 }
                             }
                         }
@@ -389,6 +419,17 @@ struct ContentView: View {
                 }
             }
             .padding(16)
+        }
+        
+        private func colorForLogType(_ type: LogType) -> Color {
+            switch type {
+            case .normal:
+                return .primary
+            case .error:
+                return .red
+            case .success:
+                return .green
+            }
         }
         
         private func copyVisibleLogs() {
@@ -473,7 +514,7 @@ struct ContentView: View {
                 refreshWirelessDevices(adbPath: adbPath)
             }
         } catch {
-            log("❌ 错误：\(error.localizedDescription)")
+            log("❌ 错误：\(error.localizedDescription)", type: .error)
         }
     }
     
@@ -508,7 +549,7 @@ struct ContentView: View {
                 }
             } catch {
                 DispatchQueue.main.async {
-                    log("❌ 启动失败：\(error.localizedDescription)")
+                    log("❌ 启动失败：\(error.localizedDescription)", type: .error)
                     isRunning = false
                 }
             }
@@ -533,7 +574,7 @@ struct ContentView: View {
                 }
             } catch {
                 DispatchQueue.main.async {
-                    log("❌ 关闭失败：\(error.localizedDescription)")
+                    log("❌ 关闭失败：\(error.localizedDescription)", type: .error)
                     isRunning = false
                 }
             }
@@ -604,7 +645,7 @@ struct ContentView: View {
                 executeCommand(cmd, label: "编译并运行")
             } else {
                 DispatchQueue.main.async {
-                    log("❌ 无法解析包名，请检查 build.gradle")
+                    log("❌ 无法解析包名，请检查 build.gradle", type: .error)
                     isRunning = false
                 }
             }
@@ -634,7 +675,7 @@ struct ContentView: View {
                 return
             }
 
-            let releaseApkDir = "\(projectPath)/\(selectedAppModule)/build/outputs/apk/release"
+            let releaseApkDir = "\(projectPath)/\(selectedAppModule)/release"
             let cleanReleaseCmd = "rm -f \(releaseApkDir)/*.apk"
             executeCommand(cleanReleaseCmd, label: "清理旧APK")
             let assembleCmd = "cd \(projectPath) && ./gradlew :\(selectedAppModule):assembleRelease"
@@ -654,7 +695,7 @@ struct ContentView: View {
 
                 guard let apkName = files.first else {
                     DispatchQueue.main.async {
-                        log("❌ 未找到 Release APK，请检查是否编译成功")
+                        log("❌ 未找到 Release APK，请检查是否编译成功", type: .error)
                         isRunning = false
                     }
                     return
@@ -667,41 +708,52 @@ struct ContentView: View {
 
             } catch {
                 DispatchQueue.main.async {
-                    log("❌ 无法读取APK目录: \(error.localizedDescription)")
+                    log("❌ 无法读取APK目录: \(error.localizedDescription)", type: .error)
                     isRunning = false
                 }
             }
         }
     }
     
-    // ✅ 优化：使用 UUID 追踪进程，避免闭包捕获
     private func executeCommand(_ command: String, label: String) {
         let androidHome = NSHomeDirectory() + "/Library/Android/sdk"
         let processId = UUID()
+        
+        lastTaskSuccess = nil
         
         let task = Process()
         task.launchPath = "/bin/bash"
         task.environment = ProcessInfo.processInfo.environment.merging(["ANDROID_HOME": androidHome]) { _, new in new }
         task.arguments = ["-i", "-c", command]
         
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = pipe
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        task.standardOutput = stdoutPipe
+        task.standardError = stderrPipe
         
-        let fileHandle = pipe.fileHandleForReading
+        let stdoutHandle = stdoutPipe.fileHandleForReading
+        let stderrHandle = stderrPipe.fileHandleForReading
         
-        // ✅ 注册进程
         DispatchQueue.main.async {
             activeProcesses.insert(processId)
         }
         
-        // ✅ 使用捕获列表，但不用 weak（因为是 struct）
-        fileHandle.readabilityHandler = { handle in
+        stdoutHandle.readabilityHandler = { handle in
             let data = handle.availableData
             if !data.isEmpty, let output = String(data: data, encoding: .utf8) {
                 let lines = output.split(separator: "\n").map(String.init)
                 DispatchQueue.main.async {
-                    self.appendLogs(lines)
+                    self.appendLogs(lines, type: .normal)
+                }
+            }
+        }
+        
+        stderrHandle.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty, let output = String(data: data, encoding: .utf8) {
+                let lines = output.split(separator: "\n").map(String.init)
+                DispatchQueue.main.async {
+                    self.appendLogs(lines, type: .error)
                 }
             }
         }
@@ -709,33 +761,37 @@ struct ContentView: View {
         do {
             try task.run()
             task.terminationHandler = { t in
-                // ✅ 立即清理 handler
-                fileHandle.readabilityHandler = nil
+                stdoutHandle.readabilityHandler = nil
+                stderrHandle.readabilityHandler = nil
                 
                 DispatchQueue.main.async {
-                    // 移除进程追踪
                     activeProcesses.remove(processId)
                     
-                    if t.terminationStatus == 0 {
-                        log("✓ \(label) 完成")
+                    let success = t.terminationStatus == 0
+                    lastTaskSuccess = success
+                    
+                    if success {
+                        log("✓ \(label) 完成", type: .success)
                     } else {
-                        log("✗ \(label) 失败 (代码: \(t.terminationStatus))")
+                        log("✗ \(label) 失败 (代码: \(t.terminationStatus))", type: .error)
                     }
                     isRunning = false
                 }
             }
         } catch {
-            fileHandle.readabilityHandler = nil
+            stdoutHandle.readabilityHandler = nil
+            stderrHandle.readabilityHandler = nil
             DispatchQueue.main.async {
                 activeProcesses.remove(processId)
-                log("❌ 执行失败：\(error.localizedDescription)")
+                lastTaskSuccess = false
+                log("❌ 执行失败：\(error.localizedDescription)", type: .error)
                 isRunning = false
             }
         }
     }
     
-    private func appendLogs(_ lines: [String]) {
-        logOutput.append(contentsOf: lines.map { LogLine(text: $0) })
+    private func appendLogs(_ lines: [String], type: LogType = .normal) {
+        logOutput.append(contentsOf: lines.map { LogLine(text: $0, type: type) })
         
         if logOutput.count > logTrimThreshold {
             let removeCount = logOutput.count - maxLogLines
@@ -743,10 +799,10 @@ struct ContentView: View {
         }
     }
     
-    private func log(_ message: String) {
+    private func log(_ message: String, type: LogType = .normal) {
         DispatchQueue.main.async {
             let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-            let line = LogLine(text: "[\(timestamp)] \(message)")
+            let line = LogLine(text: "[\(timestamp)] \(message)", type: type)
             logOutput.append(line)
             
             if logOutput.count > logTrimThreshold {
@@ -781,7 +837,7 @@ struct ContentView: View {
                 }
             }
         } catch {
-            log("❌ 无法读取 build.gradle: \(error.localizedDescription)")
+            log("❌ 无法读取 build.gradle: \(error.localizedDescription)", type: .error)
         }
         
         return nil
@@ -890,7 +946,7 @@ struct ContentView: View {
             guard let data = try? ipPipe.fileHandleForReading.readToEnd(),
                   let ip = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !ip.isEmpty else {
-                DispatchQueue.main.async { self.log("❌ 无法获取本地 IP") }
+                DispatchQueue.main.async { self.log("❌ 无法获取本地 IP", type: .error) }
                 return
             }
 
@@ -908,7 +964,7 @@ struct ContentView: View {
             guard let output = try? pipe.fileHandleForReading.readToEnd(),
                   let text = String(data: output, encoding: .utf8),
                   !text.isEmpty else {
-                DispatchQueue.main.async { self.log("❌ 未发现开放的无线调试端口") }
+                DispatchQueue.main.async { self.log("❌ 未发现开放的无线调试端口", type: .error) }
                 completion([])
                 return
             }
@@ -972,7 +1028,7 @@ struct ContentView: View {
                                     let connectCmd = "\(adbPath) connect \(ip):\(port)"
                                     DispatchQueue.global().async {
                                         _ = try? Process.run(URL(fileURLWithPath: "/bin/bash"), arguments: ["-c", connectCmd])
-                                        DispatchQueue.main.async { self.log("✅ 已连接 \(ip):\(port)") }
+                                        DispatchQueue.main.async { self.log("✅ 已连接 \(ip):\(port)", type: .success) }
                                     }
                                 } else {
                                     DispatchQueue.main.async { self.log("⚠️ 忽略 \(ip):\(port)") }
@@ -994,6 +1050,12 @@ struct ContentView: View {
 struct LogLine: Identifiable, Hashable {
     let id = UUID()
     let text: String
+    let type: LogType
+    
+    init(text: String, type: LogType = .normal) {
+        self.text = text
+        self.type = type
+    }
     
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
