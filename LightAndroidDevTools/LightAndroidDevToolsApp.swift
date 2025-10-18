@@ -318,6 +318,11 @@ struct ContentView: View {
                 if isRunning {
                     ProgressView()
                         .scaleEffect(0.7)
+                } else if let success = lastTaskSuccess {
+                    Image(systemName: success ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundColor(success ? .green : .red)
+                        .font(.system(size: 14))
+                        .help(success ? "完成" : "失败")
                 }
                 
                 Picker("", selection: $selectedAVD) {
@@ -668,48 +673,60 @@ struct ContentView: View {
 
         DispatchQueue.global().async {
             let adbPath = NSHomeDirectory() + "/Library/Android/sdk/platform-tools/adb"
-
-            if buildType == "debug" {
-                let gradleTask = "installDebug"
-                executeCommand("cd \(projectPath) && ./gradlew \(gradleTask)", label: "安装Debug APK")
-                return
-            }
-
-            let releaseApkDir = "\(projectPath)/\(selectedAppModule)/release"
-            let cleanReleaseCmd = "rm -f \(releaseApkDir)/*.apk"
-            executeCommand(cleanReleaseCmd, label: "清理旧APK")
-            let assembleCmd = "cd \(projectPath) && ./gradlew :\(selectedAppModule):assembleRelease"
-            log("⚙️ 开始编译 Release APK...")
-            executeCommand(assembleCmd, label: "编译Release APK")
-
             let fileManager = FileManager.default
 
+            // 确定 APK 搜索路径
+            let apkSearchPath: String
+            let buildVariant: String
+            
+            if buildType == "debug" {
+                apkSearchPath = "\(projectPath)/\(selectedAppModule)/build/outputs/apk/debug"
+                buildVariant = "debug"
+            } else {
+                apkSearchPath = "\(projectPath)/\(selectedAppModule)/release"
+                buildVariant = "release"
+            }
+
+            // 查找最新的 APK 文件
             do {
-                let files = try fileManager.contentsOfDirectory(atPath: releaseApkDir)
+                guard fileManager.fileExists(atPath: apkSearchPath) else {
+                    DispatchQueue.main.async {
+                        self.log("❌ APK 目录不存在: \(apkSearchPath)", type: .error)
+                        self.log("💡 请先执行「编译APK」", type: .normal)
+                        self.isRunning = false
+                    }
+                    return
+                }
+                
+                let files = try fileManager.contentsOfDirectory(atPath: apkSearchPath)
                     .filter { $0.hasSuffix(".apk") }
                     .sorted { a, b in
-                        let aTime = (try? fileManager.attributesOfItem(atPath: "\(releaseApkDir)/\(a)")[.modificationDate] as? Date) ?? .distantPast
-                        let bTime = (try? fileManager.attributesOfItem(atPath: "\(releaseApkDir)/\(b)")[.modificationDate] as? Date) ?? .distantPast
+                        let aTime = (try? fileManager.attributesOfItem(atPath: "\(apkSearchPath)/\(a)")[.modificationDate] as? Date) ?? .distantPast
+                        let bTime = (try? fileManager.attributesOfItem(atPath: "\(apkSearchPath)/\(b)")[.modificationDate] as? Date) ?? .distantPast
                         return aTime > bTime
                     }
 
                 guard let apkName = files.first else {
                     DispatchQueue.main.async {
-                        log("❌ 未找到 Release APK，请检查是否编译成功", type: .error)
-                        isRunning = false
+                        self.log("❌ 未找到 \(buildVariant.capitalized) APK", type: .error)
+                        self.log("💡 请先执行「编译APK」", type: .normal)
+                        self.isRunning = false
                     }
                     return
                 }
 
-                let apkPath = "\(releaseApkDir)/\(apkName)"
-                log("📦 找到 APK：\(apkPath)")
+                let apkPath = "\(apkSearchPath)/\(apkName)"
+                DispatchQueue.main.async {
+                    self.log("📦 找到 APK：\(apkPath)")
+                }
+                
                 let installCmd = "\(adbPath) install -r \"\(apkPath)\""
-                executeCommand(installCmd, label: "安装Release APK")
+                self.executeCommand(installCmd, label: "安装\(buildVariant.capitalized) APK")
 
             } catch {
                 DispatchQueue.main.async {
-                    log("❌ 无法读取APK目录: \(error.localizedDescription)", type: .error)
-                    isRunning = false
+                    self.log("❌ 无法读取APK目录: \(error.localizedDescription)", type: .error)
+                    self.isRunning = false
                 }
             }
         }
@@ -933,54 +950,110 @@ struct ContentView: View {
         return output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     }
 
-    private func scanWirelessDevices(completion: @escaping ([(String, String)]) -> Void) {
+    private func scanWirelessDevicesWithMDNS(completion: @escaping ([(String, String)]) -> Void) {
         DispatchQueue.global().async {
-            let ipTask = Process()
-            ipTask.launchPath = "/bin/bash"
-            ipTask.arguments = ["-c", "ipconfig getifaddr en0 || ipconfig getifaddr en1 || ipconfig getifaddr en2"]
-            let ipPipe = Pipe()
-            ipTask.standardOutput = ipPipe
-            try? ipTask.run()
-            ipTask.waitUntilExit()
-
-            guard let data = try? ipPipe.fileHandleForReading.readToEnd(),
-                  let ip = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !ip.isEmpty else {
-                DispatchQueue.main.async { self.log("❌ 无法获取本地 IP", type: .error) }
-                return
-            }
-
-            let prefix = ip.split(separator: ".").dropLast().joined(separator: ".")
-            let nmapCmd = "nmap -p 37000-49000 --open --min-rate 5000 --max-retries 2 --host-timeout 5s -oG - \(prefix).0/24 | awk '/open/{print $2, $5}'"
-            let nmapTask = Process()
-            nmapTask.launchPath = "/bin/bash"
-            nmapTask.arguments = ["-c", nmapCmd]
-            let pipe = Pipe()
-            nmapTask.standardOutput = pipe
-            nmapTask.standardError = pipe
-            try? nmapTask.run()
-            nmapTask.waitUntilExit()
-
-            guard let output = try? pipe.fileHandleForReading.readToEnd(),
-                  let text = String(data: output, encoding: .utf8),
-                  !text.isEmpty else {
-                DispatchQueue.main.async { self.log("❌ 未发现开放的无线调试端口", type: .error) }
-                completion([])
-                return
-            }
-
-            let lines = text.split(separator: "\n")
-            var devices: [(String, String)] = []
-            for line in lines {
-                let parts = line.split(separator: " ")
-                if parts.count == 2 {
-                    let ip = String(parts[0])
-                    let port = parts[1].replacingOccurrences(of: "/open/tcp//", with: "")
-                    devices.append((ip, port))
+            let adbPath = NSHomeDirectory() + "/Library/Android/sdk/platform-tools/adb"
+            let androidHome = NSHomeDirectory() + "/Library/Android/sdk"
+            
+            // 启用 Openscreen mDNS (macOS 已有 Bonjour，但 Openscreen 更可靠)
+            var environment = ProcessInfo.processInfo.environment
+            environment["ANDROID_HOME"] = androidHome
+            environment["ADB_MDNS_OPENSCREEN"] = "1"
+            
+            // 重启 ADB 服务器以应用 mDNS 设置
+            let killTask = Process()
+            killTask.launchPath = "/bin/bash"
+            killTask.environment = environment
+            killTask.arguments = ["-c", "\(adbPath) kill-server"]
+            killTask.standardOutput = Pipe()
+            killTask.standardError = Pipe()
+            
+            do {
+                try killTask.run()
+                killTask.waitUntilExit()
+                
+                // 等待服务器关闭
+                Thread.sleep(forTimeInterval: 0.5)
+                
+                // 启动 ADB 服务器并查询 mDNS 服务
+                let mdnsTask = Process()
+                mdnsTask.launchPath = "/bin/bash"
+                mdnsTask.environment = environment
+                mdnsTask.arguments = ["-c", "\(adbPath) start-server && sleep 1 && \(adbPath) mdns services"]
+                
+                let pipe = Pipe()
+                mdnsTask.standardOutput = pipe
+                mdnsTask.standardError = Pipe()
+                
+                try mdnsTask.run()
+                mdnsTask.waitUntilExit()
+                
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                guard let output = String(data: data, encoding: .utf8), !output.isEmpty else {
+                    DispatchQueue.main.async {
+                        self.log("⚠️ 未发现 mDNS 服务")
+                    }
+                    completion([])
+                    return
                 }
+                
+                DispatchQueue.main.async {
+                    self.log("📡 mDNS 扫描结果：")
+                    self.log(output)
+                }
+                
+                // 解析 mDNS 服务列表
+                // 格式示例：
+                // List of discovered mdns services
+                // adb-XXXXXX-YYYYYY _adb-tls-connect._tcp 192.168.1.100:37381
+                var devices: [(String, String)] = []
+                let lines = output.split(separator: "\n").map(String.init)
+                
+                for line in lines {
+                    // 跳过标题行
+                    if line.contains("List of discovered") || line.isEmpty {
+                        continue
+                    }
+                    
+                    // 匹配包含 IP:Port 的行
+                    let components = line.split(separator: " ").map(String.init)
+                    if components.count >= 3 {
+                        // 查找 IP:Port 格式的部分
+                        for component in components {
+                            if component.contains(":") && component.contains(".") {
+                                let parts = component.split(separator: ":")
+                                if parts.count == 2 {
+                                    let ip = String(parts[0])
+                                    let port = String(parts[1])
+                                    
+                                    // 过滤 pairing 服务，只保留 connect 服务
+                                    if line.contains("_adb-tls-connect") || line.contains("_adb._tcp") {
+                                        devices.append((ip, port))
+                                        DispatchQueue.main.async {
+                                            self.log("✓ 发现设备: \(ip):\(port)")
+                                        }
+                                    }
+                                }
+                                break
+                            }
+                        }
+                    }
+                }
+                
+                DispatchQueue.main.async {
+                    if devices.isEmpty {
+                        self.log("⚠️ 未找到可连接的无线设备")
+                        self.log("💡 提示：请确保设备已启用「无线调试」并已配对")
+                    }
+                    completion(devices)
+                }
+                
+            } catch {
+                DispatchQueue.main.async {
+                    self.log("❌ mDNS 扫描失败: \(error.localizedDescription)", type: .error)
+                }
+                completion([])
             }
-
-            DispatchQueue.main.async { completion(devices) }
         }
     }
     
@@ -991,25 +1064,44 @@ struct ContentView: View {
         }
         
         isScanningWireless = true
+        log("🔍 使用 mDNS 扫描无线 ADB 设备...")
         
         DispatchQueue.global().async {
+            // 清理离线设备
             let disconnectedDevices = self.getOfflineWirelessDevices(adbPath: adbPath)
             
             for ip in disconnectedDevices {
                 let disconnectCmd = "\(adbPath) disconnect \(ip)"
-                _ = try? Process.run(URL(fileURLWithPath: "/bin/bash"), arguments: ["-c", disconnectCmd])
+                let task = Process()
+                task.launchPath = "/bin/bash"
+                task.arguments = ["-c", disconnectCmd]
+                task.standardOutput = Pipe()
+                task.standardError = Pipe()
+                try? task.run()
+                task.waitUntilExit()
                 DispatchQueue.main.async { self.log("⚠️ 已断开离线设备: \(ip)") }
             }
             
-            self.scanWirelessDevices { devices in
+            // 使用官方 mDNS 扫描
+            self.scanWirelessDevicesWithMDNS { devices in
                 guard !devices.isEmpty else {
-                    DispatchQueue.main.async { self.isScanningWireless = false }
+                    DispatchQueue.main.async {
+                        self.log("✓ 扫描完成，未发现新设备")
+                        self.isScanningWireless = false
+                    }
                     return
+                }
+
+                DispatchQueue.main.async {
+                    self.log("✓ 发现 \(devices.count) 个潜在无线设备")
                 }
 
                 func showNextDevice(_ index: Int) {
                     guard index < devices.count else {
-                        self.isScanningWireless = false
+                        DispatchQueue.main.async {
+                            self.log("✓ 无线设备扫描完成")
+                            self.isScanningWireless = false
+                        }
                         return
                     }
                     
@@ -1017,21 +1109,46 @@ struct ContentView: View {
                     
                     DispatchQueue.main.async {
                         let alert = NSAlert()
-                        alert.messageText = "发现新无线设备"
-                        alert.informativeText = "是否连接 \(ip):\(port)？"
+                        alert.messageText = "发现无线调试设备"
+                        alert.informativeText = "检测到设备 \(ip):\(port)\n是否连接此设备？"
                         alert.addButton(withTitle: "连接")
-                        alert.addButton(withTitle: "取消")
+                        alert.addButton(withTitle: "跳过")
+                        alert.alertStyle = .informational
                         
                         if let window = NSApplication.shared.windows.first {
                             alert.beginSheetModal(for: window) { response in
                                 if response == .alertFirstButtonReturn {
                                     let connectCmd = "\(adbPath) connect \(ip):\(port)"
                                     DispatchQueue.global().async {
-                                        _ = try? Process.run(URL(fileURLWithPath: "/bin/bash"), arguments: ["-c", connectCmd])
-                                        DispatchQueue.main.async { self.log("✅ 已连接 \(ip):\(port)", type: .success) }
+                                        let task = Process()
+                                        task.launchPath = "/bin/bash"
+                                        task.arguments = ["-c", connectCmd]
+                                        let pipe = Pipe()
+                                        task.standardOutput = pipe
+                                        task.standardError = pipe
+                                        
+                                        do {
+                                            try task.run()
+                                            task.waitUntilExit()
+                                            let output = try pipe.fileHandleForReading.readDataToEndOfFile()
+                                            let result = String(data: output, encoding: .utf8) ?? ""
+                                            
+                                            DispatchQueue.main.async {
+                                                if result.contains("connected") {
+                                                    self.log("✅ 成功连接 \(ip):\(port)", type: .success)
+                                                    self.refreshAVDList()
+                                                } else {
+                                                    self.log("⚠️ 连接 \(ip):\(port) 失败: \(result)")
+                                                }
+                                            }
+                                        } catch {
+                                            DispatchQueue.main.async {
+                                                self.log("❌ 连接命令执行失败: \(error.localizedDescription)", type: .error)
+                                            }
+                                        }
                                     }
                                 } else {
-                                    DispatchQueue.main.async { self.log("⚠️ 忽略 \(ip):\(port)") }
+                                    DispatchQueue.main.async { self.log("⏭️ 已跳过 \(ip):\(port)") }
                                 }
                                 showNextDevice(index + 1)
                             }
