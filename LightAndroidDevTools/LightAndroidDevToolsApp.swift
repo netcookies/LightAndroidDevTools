@@ -1,4 +1,5 @@
 import SwiftUI
+internal import UniformTypeIdentifiers
 
 @main
 struct LightAndroidDevToolsApp: App {
@@ -75,6 +76,11 @@ struct ContentView: View {
     @State private var activeProcesses: Set<UUID> = []
     @State private var lastTaskSuccess: Bool? = nil
     @State private var scrollToEnd = false
+    @State private var keystorePath: String = ""
+    @State private var keyAlias: String = ""
+    @State private var storePassword: String = ""
+    @State private var keyPassword: String = ""
+    @State private var showSigningDialog: Bool = false
     
     private let maxLogLines = 1000
     private let logTrimThreshold = 1200
@@ -83,6 +89,10 @@ struct ContentView: View {
     private let projectPathKey = "projectPath"
     private let buildTypeKey = "buildType"
     private let appModuleKey = "selectedAppModule"
+    private let keystorePathKey = "keystorePath"
+    private let keyAliasKey = "keyAlias"
+    private let storePasswordKey = "storePassword"
+    private let keyPasswordKey = "keyPassword"
     
     var body: some View {
         Group {
@@ -116,6 +126,9 @@ struct ContentView: View {
         }
         .onChange(of: selectedAppModule) {
             saveSettings()
+        }
+        .sheet(isPresented: $showSigningDialog) {
+            signingConfigDialog
         }
     }
     
@@ -466,6 +479,52 @@ struct ContentView: View {
         }
     }
     
+    var signingConfigDialog: some View {
+        VStack(spacing: 20) {
+            Text("Release APK 签名配置")
+                .font(.headline)
+            
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Keystore 路径:")
+                HStack {
+                    TextField("选择 keystore 文件", text: $keystorePath)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                    Button("浏览") {
+                        selectKeystoreFile()
+                    }
+                }
+                
+                Text("Key Alias:")
+                TextField("输入 key alias", text: $keyAlias)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                
+                Text("Store Password:")
+                SecureField("输入 store 密码", text: $storePassword)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                
+                Text("Key Password:")
+                SecureField("输入 key 密码", text: $keyPassword)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+            }
+            
+            HStack {
+                Button("取消") {
+                    showSigningDialog = false
+                }
+                
+                Button("开始构建并签名") {
+                    showSigningDialog = false
+                    saveSettings()
+                    buildAndSignRelease()
+                }
+                .disabled(keystorePath.isEmpty || keyAlias.isEmpty ||
+                         storePassword.isEmpty || keyPassword.isEmpty)
+            }
+        }
+        .padding()
+        .frame(width: 500)
+    }
+    
     private func selectProjectPath() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -659,11 +718,167 @@ struct ContentView: View {
     
     private func buildAPK() {
         guard !projectPath.isEmpty else { return }
+        
+        if buildType == "release" {
+            // Release 版本先显示签名配置对话框
+            showSigningDialog = true
+        } else {
+            // Debug 版本直接构建
+            isRunning = true
+            DispatchQueue.global().async {
+                executeCommand("cd \(projectPath) && ./gradlew assembleDebug", label: "编译Debug APK")
+            }
+        }
+    }
+
+    private func buildAndSignRelease() {
         isRunning = true
         
         DispatchQueue.global().async {
-            let gradleTask = buildType == "debug" ? "assembleDebug" : "assembleRelease"
-            executeCommand("cd \(projectPath) && ./gradlew \(gradleTask)", label: "编译APK")
+            // 同步执行构建
+            let success = self.executeCommandSync("cd \(self.projectPath) && ./gradlew assembleRelease", label: "编译Release APK")
+            
+            if success {
+                // 构建成功后再签名
+                self.signAPK()
+            } else {
+                DispatchQueue.main.async {
+                    self.log("❌ 编译失败，取消签名", type: .error)
+                    self.isRunning = false
+                }
+            }
+        }
+    }
+
+    private func signAPK() {
+        let buildToolsPath = NSHomeDirectory() + "/Library/Android/sdk/build-tools/36.0.0"
+        let apkDir = "\(projectPath)/\(selectedAppModule)/build/outputs/apk/release"
+        let releasePath = "\(projectPath)/\(selectedAppModule)/release"
+        let unsignedAPK = "\(apkDir)/app-release-unsigned.apk"
+        let alignedAPK = "\(apkDir)/app-release-aligned.apk"
+        let finalAPK = "\(releasePath)/app-release.apk"
+        let idsigFile = "\(finalAPK).idsig"
+
+        // 检查未签名的 APK 是否存在
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: unsignedAPK) else {
+            DispatchQueue.main.async {
+                self.log("❌ 未找到未签名的APK: \(unsignedAPK)", type: .error)
+                self.isRunning = false
+            }
+            return
+        }
+        
+        DispatchQueue.main.async {
+            self.log("✓ 找到未签名APK，开始签名流程")
+        }
+        
+        // 第零步：清理旧文件
+        DispatchQueue.main.async {
+            self.log("🧹 清理旧的签名文件...")
+        }
+        
+        do {
+            // 删除旧的 aligned APK
+            if fileManager.fileExists(atPath: alignedAPK) {
+                try fileManager.removeItem(atPath: alignedAPK)
+                DispatchQueue.main.async {
+                    self.log("✓ 已删除旧的对齐文件")
+                }
+            }
+            
+            // 删除旧的 signed APK
+            if fileManager.fileExists(atPath: finalAPK) {
+                try fileManager.removeItem(atPath: finalAPK)
+                DispatchQueue.main.async {
+                    self.log("✓ 已删除旧的签名文件")
+                }
+            }
+            
+            // 删除旧的 signed APK idsig
+            if fileManager.fileExists(atPath: idsigFile) {
+                try fileManager.removeItem(atPath: idsigFile)
+                DispatchQueue.main.async {
+                    self.log("✓ 已删除旧的签名临时文件")
+                }
+            }
+        } catch {
+            DispatchQueue.main.async {
+                self.log("⚠️ 清理旧文件时出错: \(error.localizedDescription)", type: .error)
+                // 继续执行，不中断流程
+            }
+        }
+        
+        // 第一步：zipalign 对齐
+        let zipalignSuccess = executeCommandSync(
+            "\(buildToolsPath)/zipalign -v -p 4 \"\(unsignedAPK)\" \"\(alignedAPK)\"",
+            label: "对齐APK"
+        )
+        
+        guard zipalignSuccess else {
+            DispatchQueue.main.async {
+                self.log("❌ APK对齐失败", type: .error)
+                self.isRunning = false
+            }
+            return
+        }
+        
+        // 第二步：签名
+        let signSuccess = executeCommandSync(
+            "\(buildToolsPath)/apksigner sign --ks \"\(keystorePath)\" --ks-key-alias \"\(keyAlias)\" --ks-pass pass:\(storePassword) --key-pass pass:\(keyPassword) --out \"\(finalAPK)\" \"\(alignedAPK)\"",
+            label: "签名APK"
+        )
+        
+        guard signSuccess else {
+            DispatchQueue.main.async {
+                self.log("❌ APK签名失败", type: .error)
+                self.isRunning = false
+            }
+            return
+        }
+        
+        // 第三步：验证签名
+        let verifySuccess = executeCommandSync(
+            "\(buildToolsPath)/apksigner verify \"\(finalAPK)\"",
+            label: "验证签名"
+        )
+        
+        DispatchQueue.main.async {
+            if verifySuccess {
+                self.log("✅ APK签名成功!", type: .success)
+                self.log("📦 文件位置: \(finalAPK)")
+                
+                // 清理中间文件
+                do {
+                    if fileManager.fileExists(atPath: alignedAPK) {
+                        try fileManager.removeItem(atPath: alignedAPK)
+                    }
+                    if fileManager.fileExists(atPath: unsignedAPK) {
+                        try fileManager.removeItem(atPath: unsignedAPK)
+                    }
+                    self.log("✓ 已清理临时文件")
+                } catch {
+                    self.log("⚠️ 清理临时文件失败: \(error.localizedDescription)")
+                }
+            } else {
+                self.log("⚠️ 签名验证失败", type: .error)
+            }
+            self.isRunning = false
+        }
+    }
+    
+    private func selectKeystoreFile() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.item]
+        panel.message = "选择 Keystore 文件 (.jks 或 .keystore)"
+        
+        if panel.runModal() == .OK {
+            if let url = panel.url {
+                keystorePath = url.path
+            }
         }
     }
     
@@ -807,6 +1022,96 @@ struct ContentView: View {
         }
     }
     
+    private func executeCommandSync(_ command: String, label: String) -> Bool {
+        let androidHome = NSHomeDirectory() + "/Library/Android/sdk"
+        
+        let task = Process()
+        task.launchPath = "/bin/bash"
+        task.environment = ProcessInfo.processInfo.environment.merging(["ANDROID_HOME": androidHome]) { _, new in new }
+        task.arguments = ["-i", "-c", command]
+        
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        task.standardOutput = stdoutPipe
+        task.standardError = stderrPipe
+        
+        let stdoutHandle = stdoutPipe.fileHandleForReading
+        let stderrHandle = stderrPipe.fileHandleForReading
+        
+        DispatchQueue.main.async {
+            self.log("▶️ \(label)...")
+        }
+        
+        // 使用 readabilityHandler 实时读取输出
+        stdoutHandle.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty, let output = String(data: data, encoding: .utf8) {
+                let lines = output.split(separator: "\n").map(String.init)
+                DispatchQueue.main.async {
+                    self.appendLogs(lines, type: .normal)
+                }
+            }
+        }
+        
+        stderrHandle.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty, let output = String(data: data, encoding: .utf8) {
+                let lines = output.split(separator: "\n").map(String.init)
+                DispatchQueue.main.async {
+                    // Gradle 的 WARNING 也算正常输出，不用红色
+                    self.appendLogs(lines, type: .normal)
+                }
+            }
+        }
+        
+        do {
+            try task.run()
+            task.waitUntilExit() // 等待任务完成
+            
+            // 清理 handler
+            stdoutHandle.readabilityHandler = nil
+            stderrHandle.readabilityHandler = nil
+            
+            // 读取可能残留的输出
+            let remainingStdout = stdoutHandle.readDataToEndOfFile()
+            let remainingStderr = stderrHandle.readDataToEndOfFile()
+            
+            if !remainingStdout.isEmpty, let output = String(data: remainingStdout, encoding: .utf8) {
+                let lines = output.split(separator: "\n").map(String.init)
+                DispatchQueue.main.async {
+                    self.appendLogs(lines, type: .normal)
+                }
+            }
+            
+            if !remainingStderr.isEmpty, let output = String(data: remainingStderr, encoding: .utf8) {
+                let lines = output.split(separator: "\n").map(String.init)
+                DispatchQueue.main.async {
+                    self.appendLogs(lines, type: .normal)
+                }
+            }
+            
+            let success = task.terminationStatus == 0
+            
+            DispatchQueue.main.async {
+                if success {
+                    self.log("✓ \(label) 完成", type: .success)
+                } else {
+                    self.log("✗ \(label) 失败 (代码: \(task.terminationStatus))", type: .error)
+                }
+            }
+            
+            return success
+        } catch {
+            stdoutHandle.readabilityHandler = nil
+            stderrHandle.readabilityHandler = nil
+            
+            DispatchQueue.main.async {
+                self.log("❌ 执行失败：\(error.localizedDescription)", type: .error)
+            }
+            return false
+        }
+    }
+    
     private func appendLogs(_ lines: [String], type: LogType = .normal) {
         logOutput.append(contentsOf: lines.map { LogLine(text: $0, type: type) })
         
@@ -882,12 +1187,20 @@ struct ContentView: View {
         projectPath = defaults.string(forKey: projectPathKey) ?? ""
         buildType = defaults.string(forKey: buildTypeKey) ?? "debug"
         selectedAppModule = defaults.string(forKey: appModuleKey) ?? "app"
+        keystorePath = defaults.string(forKey: keystorePathKey) ?? ""
+        keyAlias = defaults.string(forKey: keyAliasKey) ?? ""
+        storePassword = defaults.string(forKey: storePasswordKey) ?? ""
+        keyPassword = defaults.string(forKey: keyPasswordKey) ?? ""
     }
     
     private func saveSettings() {
         defaults.set(projectPath, forKey: projectPathKey)
         defaults.set(buildType, forKey: buildTypeKey)
         defaults.set(selectedAppModule, forKey: appModuleKey)
+        defaults.set(keystorePath, forKey: keystorePathKey)
+        defaults.set(keyAlias, forKey: keyAliasKey)
+        defaults.set(storePassword, forKey: storePasswordKey)
+        defaults.set(keyPassword, forKey: keyPasswordKey)
     }
     
     private func detectModules() {
