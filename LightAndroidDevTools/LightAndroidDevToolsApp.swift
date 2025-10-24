@@ -12,7 +12,7 @@ struct LightAndroidDevToolsApp: App {
                 let compact = UserDefaults.standard.bool(forKey: "isCompactMode")
                 if let window = NSApplication.shared.windows.first {
                     if (compact) {
-                        window.setContentSize(NSSize(width: 500, height: 85))
+                        window.setContentSize(NSSize(width: 650, height: 70))
                         window.level = .floating
                     } else {
                         window.setContentSize(NSSize(width: 900, height: 650))
@@ -28,7 +28,7 @@ struct LightAndroidDevToolsApp: App {
                    let screen = window.screen ?? NSScreen.main {
 
                     if isCompactMode {
-                        let newSize = NSSize(width: 500, height: 85)
+                        let newSize = NSSize(width: 650, height: 70)
                         window.setContentSize(newSize)
 
                         let screenFrame = screen.visibleFrame
@@ -60,11 +60,100 @@ enum LogType {
     case success
 }
 
+// MARK: - Button Styles
+
+struct ToolbarButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(minWidth: 32, minHeight: 28)
+            .padding(.horizontal, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(configuration.isPressed ? Color(NSColor.controlColor).opacity(0.5) : Color(NSColor.controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+            )
+            .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
+            .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+struct CompactIconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(width: 28, height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(configuration.isPressed ? Color(NSColor.controlColor).opacity(0.5) : Color(NSColor.controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+            )
+            .scaleEffect(configuration.isPressed ? 0.92 : 1.0)
+            .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+struct PrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.vertical, 7)
+            .padding(.horizontal, 16)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(configuration.isPressed ? 0.8 : 1.0))
+            )
+            .foregroundColor(.white)
+            .scaleEffect(configuration.isPressed ? 0.96 : 1.0)
+            .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+struct SecondaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.vertical, 7)
+            .padding(.horizontal, 16)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(configuration.isPressed ? Color(NSColor.controlColor).opacity(0.5) : Color(NSColor.controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color(NSColor.separatorColor), lineWidth: 0.8)
+            )
+            .scaleEffect(configuration.isPressed ? 0.96 : 1.0)
+            .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+struct SmallButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.caption)
+            .padding(.vertical, 5)
+            .padding(.horizontal, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(configuration.isPressed ? Color(NSColor.controlColor).opacity(0.5) : Color(NSColor.controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+            )
+            .scaleEffect(configuration.isPressed ? 0.94 : 1.0)
+            .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
 struct ContentView: View {
     @State private var avdList: [String] = []
     @State private var selectedAVD: String?
     @State private var projectPath: String = ""
-    @State private var buildType: String = "debug"
+    @State private var buildType: String = "release"
     @State private var isRunning = false
     @State private var logOutput: [LogLine] = [LogLine(text: "准备就绪")]
     @State private var selectedAppModule: String = "app"
@@ -74,6 +163,7 @@ struct ContentView: View {
     @State private var emulatorCheckTimer: Timer?
     @State private var isScanningWireless = false
     @State private var activeProcesses: Set<UUID> = []
+    @State private var currentRunningProcess: Process?
     @State private var lastTaskSuccess: Bool? = nil
     @State private var scrollToEnd = false
     @State private var keystorePath: String = ""
@@ -81,10 +171,17 @@ struct ContentView: View {
     @State private var storePassword: String = ""
     @State private var keyPassword: String = ""
     @State private var showSigningDialog: Bool = false
-    
+    @State private var showAuthDialog: Bool = false
+    @State private var authCode: String = ""
+    @State private var taskStartTime: Date?
+    @State private var taskDurationTimer: Timer?
+    @State private var taskDuration: TimeInterval = 0
+
     private let maxLogLines = 1000
     private let logTrimThreshold = 1200
-    
+    private let iconFrameSize: CGFloat = 14
+    private let controlHeight: CGFloat = 28
+
     private let defaults = UserDefaults.standard
     private let projectPathKey = "projectPath"
     private let buildTypeKey = "buildType"
@@ -130,15 +227,43 @@ struct ContentView: View {
         .sheet(isPresented: $showSigningDialog) {
             signingConfigDialog
         }
+        .sheet(isPresented: $showAuthDialog) {
+            authDialog
+        }
     }
     
     private func cleanupTimer() {
         emulatorCheckTimer?.invalidate()
         emulatorCheckTimer = nil
     }
-    
+
     private func cleanupAllProcesses() {
         activeProcesses.removeAll()
+    }
+
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let minutes = Int(duration) / 60
+        let seconds = Int(duration) % 60
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    private func startTaskTimer() {
+        taskStartTime = Date()
+        taskDuration = 0
+        taskDurationTimer?.invalidate()
+        taskDurationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+            if let startTime = taskStartTime {
+                taskDuration = Date().timeIntervalSince(startTime)
+            }
+        }
+        RunLoop.main.add(taskDurationTimer!, forMode: .common)
+    }
+
+    private func stopTaskTimer() {
+        taskDurationTimer?.invalidate()
+        taskDurationTimer = nil
+        taskStartTime = nil
+        taskDuration = 0
     }
     
     var fullView: some View {
@@ -153,12 +278,13 @@ struct ContentView: View {
                             TextField("选择项目目录", text: $projectPath)
                                 .textFieldStyle(.roundedBorder)
                             Button(action: selectProjectPath) {
-                                Text("选择").frame(width: 50)
+                                Text("选择")
                             }
+                            .buttonStyle(SecondaryButtonStyle())
                         }
                     }
                 }
-                
+
                 HStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("设备")
@@ -170,9 +296,9 @@ struct ContentView: View {
                                 Text(avd).tag(avd as String?)
                             }
                         }
-                        .frame(maxWidth: .infinity)
+                        .frame(width: 325)
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 4) {
                         Text("构建类型")
                             .font(.caption)
@@ -183,7 +309,7 @@ struct ContentView: View {
                         }
                         .pickerStyle(.segmented)
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 4) {
                         Text("应用模块")
                             .font(.caption)
@@ -203,62 +329,96 @@ struct ContentView: View {
             
             HStack(spacing: 12) {
                 Button(action: refreshAVDList) {
-                    HStack {
+                    HStack(spacing: 4) {
                         Image(systemName: "arrow.clockwise")
+                            .frame(width: iconFrameSize, height: iconFrameSize)
                         Text("刷新设备")
                     }
                 }
-                
+                .buttonStyle(ToolbarButtonStyle())
+
                 Button(action: startAVD) {
-                    HStack {
+                    HStack(spacing: 4) {
                         Image(systemName: emulatorRunning ? "stop.circle.fill" : "play.fill")
+                            .frame(width: iconFrameSize, height: iconFrameSize)
                         Text(emulatorRunning ? "关闭模拟器" : "启动模拟器")
                     }
                 }
+                .buttonStyle(ToolbarButtonStyle())
                 .disabled(selectedAVD == nil)
-                
+
                 Button(action: buildProject) {
-                    HStack {
+                    HStack(spacing: 4) {
                         Image(systemName: "hammer.fill")
+                            .frame(width: iconFrameSize, height: iconFrameSize)
                         Text("编译")
                     }
                 }
+                .buttonStyle(ToolbarButtonStyle())
                 .disabled(projectPath.isEmpty || isRunning)
-                
+
                 Button(action: buildAndRun) {
-                    HStack {
+                    HStack(spacing: 4) {
                         Image(systemName: "play.circle.fill")
+                            .frame(width: iconFrameSize, height: iconFrameSize)
                         Text("编译并运行")
                     }
                 }
+                .buttonStyle(ToolbarButtonStyle())
                 .disabled(projectPath.isEmpty || selectedAVD == nil || isRunning)
-                
+
                 Button(action: buildAPK) {
-                    HStack {
+                    HStack(spacing: 4) {
                         Image(systemName: "shippingbox.fill")
+                            .frame(width: iconFrameSize, height: iconFrameSize)
                         Text("编译APK")
                     }
                 }
+                .buttonStyle(ToolbarButtonStyle())
                 .disabled(projectPath.isEmpty || isRunning)
-                
+
                 Button(action: installAPK) {
-                    HStack {
+                    HStack(spacing: 4) {
                         Image(systemName: "arrow.down.circle.fill")
+                            .frame(width: iconFrameSize, height: iconFrameSize)
                         Text("安装APK")
                     }
                 }
+                .buttonStyle(ToolbarButtonStyle())
                 .disabled(projectPath.isEmpty || isRunning)
-                
-                Spacer()
-                
-                if isRunning {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                        Text("运行中...")
-                            .font(.caption)
-                            .foregroundColor(.gray)
+
+                Button(action: { showAuthDialog = true }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "key.fill")
+                            .frame(width: iconFrameSize, height: iconFrameSize)
+                        Text("授权")
                     }
+                }
+                .buttonStyle(ToolbarButtonStyle())
+                .disabled(isRunning)
+
+                Spacer()
+
+                if isRunning {
+                    Button(action: stopCurrentTask) {
+                        HStack(spacing: 6) {
+                            Text(formatDuration(taskDuration))
+                                .font(.system(size: 13, design: .monospaced))
+                                .foregroundColor(.secondary)
+                            Image(systemName: "stop.circle.fill")
+                                .foregroundColor(.red)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color(.controlBackgroundColor))
+                        .cornerRadius(6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help("停止任务")
                 } else if let success = lastTaskSuccess {
                     HStack(spacing: 6) {
                         Image(systemName: success ? "checkmark.circle.fill" : "xmark.circle.fill")
@@ -269,12 +429,15 @@ struct ContentView: View {
                             .foregroundColor(success ? .green : .red)
                     }
                 }
-                
+
                 Button(action: { isCompactMode = true }) {
                     Image(systemName: "sidebar.left")
+                        .frame(width: iconFrameSize, height: iconFrameSize)
                 }
+                .buttonStyle(CompactIconButtonStyle())
             }
-            .padding(12)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
             .background(Color(.controlBackgroundColor))
             .border(.gray.opacity(0.3), width: 1)
             
@@ -283,78 +446,127 @@ struct ContentView: View {
     }
     
     var compactView: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Button(action: refreshAVDList) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 14))
-                }
-                .help("刷新设备")
-                
-                Button(action: startAVD) {
-                    Image(systemName: emulatorRunning ? "stop.circle.fill" : "play.fill")
-                        .font(.system(size: 14))
-                }
-                .disabled(selectedAVD == nil)
-                .help(emulatorRunning ? "关闭模拟器" : "启动模拟器")
-                
+        VStack(spacing: 6) {
+            // 第一行：操作按钮
+            HStack(spacing: 8) {
                 Button(action: buildProject) {
                     Image(systemName: "hammer.fill")
-                        .font(.system(size: 14))
+                        .frame(width: iconFrameSize, height: iconFrameSize)
                 }
+                .buttonStyle(CompactIconButtonStyle())
                 .disabled(projectPath.isEmpty || isRunning)
                 .help("编译")
-                
+
                 Button(action: buildAndRun) {
                     Image(systemName: "play.circle.fill")
-                        .font(.system(size: 14))
+                        .frame(width: iconFrameSize, height: iconFrameSize)
                 }
+                .buttonStyle(CompactIconButtonStyle())
                 .disabled(projectPath.isEmpty || selectedAVD == nil || isRunning)
                 .help("编译并运行")
-                
+
                 Button(action: buildAPK) {
                     Image(systemName: "shippingbox.fill")
-                        .font(.system(size: 14))
+                        .frame(width: iconFrameSize, height: iconFrameSize)
                 }
+                .buttonStyle(CompactIconButtonStyle())
                 .disabled(projectPath.isEmpty || isRunning)
                 .help("编译APK")
-                
+
                 Button(action: installAPK) {
                     Image(systemName: "arrow.down.circle.fill")
-                        .font(.system(size: 14))
+                        .frame(width: iconFrameSize, height: iconFrameSize)
                 }
+                .buttonStyle(CompactIconButtonStyle())
                 .disabled(projectPath.isEmpty || isRunning)
                 .help("安装APK")
-                
+
+                Button(action: { showAuthDialog = true }) {
+                    Image(systemName: "key.fill")
+                        .frame(width: iconFrameSize, height: iconFrameSize)
+                }
+                .buttonStyle(CompactIconButtonStyle())
+                .disabled(isRunning)
+                .help("授权")
+
                 Spacer()
-                
+
                 if isRunning {
-                    ProgressView()
-                        .scaleEffect(0.7)
+                    Button(action: stopCurrentTask) {
+                        HStack(spacing: 4) {
+                            Text(formatDuration(taskDuration))
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                            Image(systemName: "stop.circle.fill")
+                                .font(.system(size: 12))
+                                .foregroundColor(.red)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color(.controlBackgroundColor))
+                        .cornerRadius(4)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help("停止任务")
                 } else if let success = lastTaskSuccess {
                     Image(systemName: success ? "checkmark.circle.fill" : "xmark.circle.fill")
                         .foregroundColor(success ? .green : .red)
                         .font(.system(size: 14))
                         .help(success ? "完成" : "失败")
                 }
-                
+
+                Button(action: { isCompactMode = false }) {
+                    Image(systemName: "sidebar.right")
+                        .frame(width: iconFrameSize, height: iconFrameSize)
+                }
+                .buttonStyle(CompactIconButtonStyle())
+                .help("展开")
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 6)
+
+            // 第二行：设备选择器
+            HStack(spacing: 8) {
+                Button(action: refreshAVDList) {
+                    Image(systemName: "arrow.clockwise")
+                        .frame(width: iconFrameSize, height: iconFrameSize)
+                }
+                .buttonStyle(CompactIconButtonStyle())
+                .help("刷新设备")
+
+                Button(action: startAVD) {
+                    Image(systemName: emulatorRunning ? "stop.circle.fill" : "play.fill")
+                        .frame(width: iconFrameSize, height: iconFrameSize)
+                }
+                .buttonStyle(CompactIconButtonStyle())
+                .disabled(selectedAVD == nil)
+                .help(emulatorRunning ? "关闭模拟器" : "启动模拟器")
+
                 Picker("", selection: $selectedAVD) {
-                    Text("选择").tag(nil as String?)
+                    Text("选择设备").tag(nil as String?)
                     ForEach(avdList, id: \.self) { avd in
                         Text(avd).tag(avd as String?)
                     }
                 }
                 .font(.caption)
-                .frame(width: 100)
+                .frame(maxWidth: .infinity)
                 .disabled(isRunning)
-                
-                Button(action: { isCompactMode = false }) {
-                    Image(systemName: "sidebar.right")
-                        .font(.system(size: 14))
+
+                Picker("", selection: $buildType) {
+                    Text("Debug").tag("debug")
+                    Text("Release").tag("release")
                 }
-                .help("展开")
+                .pickerStyle(.segmented)
+                .frame(width: 120)
+                .disabled(isRunning)
+                .help("构建类型")
             }
-            .padding(8)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
         }
     }
     
@@ -373,9 +585,9 @@ struct ContentView: View {
                         .foregroundColor(.gray)
                     Spacer()
                     Button("复制当前显示内容", action: copyVisibleLogs)
-                        .font(.caption)
+                        .buttonStyle(SmallButtonStyle())
                     Button("清空", action: { logOutput.removeAll() })
-                        .font(.caption)
+                        .buttonStyle(SmallButtonStyle())
                 }
 
                 GeometryReader { outerGeo in
@@ -483,7 +695,7 @@ struct ContentView: View {
         VStack(spacing: 20) {
             Text("Release APK 签名配置")
                 .font(.headline)
-            
+
             VStack(alignment: .leading, spacing: 10) {
                 Text("Keystore 路径:")
                 HStack {
@@ -492,37 +704,73 @@ struct ContentView: View {
                     Button("浏览") {
                         selectKeystoreFile()
                     }
+                    .buttonStyle(SecondaryButtonStyle())
                 }
-                
+
                 Text("Key Alias:")
                 TextField("输入 key alias", text: $keyAlias)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
-                
+
                 Text("Store Password:")
                 SecureField("输入 store 密码", text: $storePassword)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
-                
+
                 Text("Key Password:")
                 SecureField("输入 key 密码", text: $keyPassword)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
             }
-            
+
             HStack {
                 Button("取消") {
                     showSigningDialog = false
                 }
-                
+                .buttonStyle(SecondaryButtonStyle())
+
                 Button("开始构建并签名") {
                     showSigningDialog = false
                     saveSettings()
                     buildAndSignRelease()
                 }
+                .buttonStyle(PrimaryButtonStyle())
                 .disabled(keystorePath.isEmpty || keyAlias.isEmpty ||
                          storePassword.isEmpty || keyPassword.isEmpty)
             }
         }
         .padding()
         .frame(width: 500)
+    }
+
+    var authDialog: some View {
+        VStack(spacing: 20) {
+            Text("ADB 设备授权")
+                .font(.headline)
+
+            Text("请在设备上查看授权码，并在下方输入：")
+                .font(.caption)
+                .foregroundColor(.gray)
+
+            TextField("输入授权码", text: $authCode)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+                .frame(width: 300)
+
+            HStack {
+                Button("取消") {
+                    showAuthDialog = false
+                    authCode = ""
+                }
+                .buttonStyle(SecondaryButtonStyle())
+
+                Button("授权") {
+                    showAuthDialog = false
+                    performAuth(code: authCode)
+                    authCode = ""
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(authCode.isEmpty)
+            }
+        }
+        .padding()
+        .frame(width: 400)
     }
     
     private func selectProjectPath() {
@@ -531,9 +779,47 @@ struct ContentView: View {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.message = "选择 Android 项目根目录"
-        
+
         if panel.runModal() == .OK {
             projectPath = panel.urls.first?.path ?? ""
+        }
+    }
+
+    private func stopCurrentTask() {
+        if let process = currentRunningProcess, process.isRunning {
+            // 获取进程ID并终止整个进程组
+            let pid = process.processIdentifier
+
+            // 使用 pkill 终止进程组中的所有进程
+            let killTask = Process()
+            killTask.launchPath = "/bin/bash"
+            killTask.arguments = ["-c", "pkill -TERM -P \(pid); kill -TERM \(pid)"]
+            try? killTask.run()
+            killTask.waitUntilExit()
+
+            // 等待一小段时间让进程优雅退出
+            Thread.sleep(forTimeInterval: 0.5)
+
+            // 如果进程仍在运行，强制终止
+            if process.isRunning {
+                process.terminate()
+            }
+
+            log("⚠️ 已终止当前任务", type: .error)
+            isRunning = false
+            lastTaskSuccess = false
+            currentRunningProcess = nil
+            stopTaskTimer()
+        }
+    }
+
+    private func performAuth(code: String) {
+        isRunning = true
+
+        DispatchQueue.global().async {
+            let adbPath = NSHomeDirectory() + "/Library/Android/sdk/platform-tools/adb"
+            let command = "\(adbPath) shell input text \(code)"
+            executeCommand(command, label: "授权设备")
         }
     }
     
@@ -847,7 +1133,7 @@ struct ContentView: View {
             if verifySuccess {
                 self.log("✅ APK签名成功!", type: .success)
                 self.log("📦 文件位置: \(finalAPK)")
-                
+
                 // 清理中间文件
                 do {
                     if fileManager.fileExists(atPath: alignedAPK) {
@@ -860,8 +1146,10 @@ struct ContentView: View {
                 } catch {
                     self.log("⚠️ 清理临时文件失败: \(error.localizedDescription)")
                 }
+                self.lastTaskSuccess = true
             } else {
                 self.log("⚠️ 签名验证失败", type: .error)
+                self.lastTaskSuccess = false
             }
             self.isRunning = false
         }
@@ -950,26 +1238,28 @@ struct ContentView: View {
     private func executeCommand(_ command: String, label: String) {
         let androidHome = NSHomeDirectory() + "/Library/Android/sdk"
         let processId = UUID()
-        
+
         lastTaskSuccess = nil
-        
+
         let task = Process()
         task.launchPath = "/bin/bash"
         task.environment = ProcessInfo.processInfo.environment.merging(["ANDROID_HOME": androidHome]) { _, new in new }
         task.arguments = ["-i", "-c", command]
-        
+
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         task.standardOutput = stdoutPipe
         task.standardError = stderrPipe
-        
+
         let stdoutHandle = stdoutPipe.fileHandleForReading
         let stderrHandle = stderrPipe.fileHandleForReading
-        
+
         DispatchQueue.main.async {
-            activeProcesses.insert(processId)
+            self.activeProcesses.insert(processId)
+            self.currentRunningProcess = task
+            self.startTaskTimer()
         }
-        
+
         stdoutHandle.readabilityHandler = { handle in
             let data = handle.availableData
             if !data.isEmpty, let output = String(data: data, encoding: .utf8) {
@@ -979,7 +1269,7 @@ struct ContentView: View {
                 }
             }
         }
-        
+
         stderrHandle.readabilityHandler = { handle in
             let data = handle.availableData
             if !data.isEmpty, let output = String(data: data, encoding: .utf8) {
@@ -989,35 +1279,43 @@ struct ContentView: View {
                 }
             }
         }
-        
+
         do {
             try task.run()
             task.terminationHandler = { t in
                 stdoutHandle.readabilityHandler = nil
                 stderrHandle.readabilityHandler = nil
-                
+
                 DispatchQueue.main.async {
-                    activeProcesses.remove(processId)
-                    
+                    self.activeProcesses.remove(processId)
+                    self.currentRunningProcess = nil
+                    self.stopTaskTimer()
+
                     let success = t.terminationStatus == 0
-                    lastTaskSuccess = success
-                    
-                    if success {
-                        log("✓ \(label) 完成", type: .success)
+                    self.lastTaskSuccess = success
+
+                    if t.terminationReason == .exit {
+                        if success {
+                            self.log("✓ \(label) 完成", type: .success)
+                        } else {
+                            self.log("✗ \(label) 失败 (代码: \(t.terminationStatus))", type: .error)
+                        }
                     } else {
-                        log("✗ \(label) 失败 (代码: \(t.terminationStatus))", type: .error)
+                        self.log("⚠️ \(label) 已被终止", type: .error)
                     }
-                    isRunning = false
+                    self.isRunning = false
                 }
             }
         } catch {
             stdoutHandle.readabilityHandler = nil
             stderrHandle.readabilityHandler = nil
             DispatchQueue.main.async {
-                activeProcesses.remove(processId)
-                lastTaskSuccess = false
-                log("❌ 执行失败：\(error.localizedDescription)", type: .error)
-                isRunning = false
+                self.activeProcesses.remove(processId)
+                self.currentRunningProcess = nil
+                self.stopTaskTimer()
+                self.lastTaskSuccess = false
+                self.log("❌ 执行失败：\(error.localizedDescription)", type: .error)
+                self.isRunning = false
             }
         }
     }
@@ -1185,7 +1483,7 @@ struct ContentView: View {
     
     private func loadSettings() {
         projectPath = defaults.string(forKey: projectPathKey) ?? ""
-        buildType = defaults.string(forKey: buildTypeKey) ?? "debug"
+        buildType = defaults.string(forKey: buildTypeKey) ?? "release"
         selectedAppModule = defaults.string(forKey: appModuleKey) ?? "app"
         keystorePath = defaults.string(forKey: keystorePathKey) ?? ""
         keyAlias = defaults.string(forKey: keyAliasKey) ?? ""
@@ -1263,104 +1561,150 @@ struct ContentView: View {
         return output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     }
 
+    private func getConnectedDevices(adbPath: String) -> Set<String> {
+        let task = Process()
+        task.launchPath = "/bin/bash"
+        task.arguments = ["-c", "\(adbPath) devices | grep -v 'List' | grep 'device' | awk '{print $1}'"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        try? task.run()
+        task.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return Set(output.split(separator: "\n").map(String.init).filter { !$0.isEmpty })
+    }
+
     private func scanWirelessDevicesWithMDNS(completion: @escaping ([(String, String)]) -> Void) {
         DispatchQueue.global().async {
             let adbPath = NSHomeDirectory() + "/Library/Android/sdk/platform-tools/adb"
             let androidHome = NSHomeDirectory() + "/Library/Android/sdk"
-            
-            // 启用 Openscreen mDNS (macOS 已有 Bonjour，但 Openscreen 更可靠)
+
+            // 启用 Openscreen mDNS
             var environment = ProcessInfo.processInfo.environment
             environment["ANDROID_HOME"] = androidHome
             environment["ADB_MDNS_OPENSCREEN"] = "1"
-            
+
             // 重启 ADB 服务器以应用 mDNS 设置
+            DispatchQueue.main.async {
+                self.log("🔄 重启 ADB 服务以启用 mDNS...")
+            }
+
             let killTask = Process()
             killTask.launchPath = "/bin/bash"
             killTask.environment = environment
             killTask.arguments = ["-c", "\(adbPath) kill-server"]
             killTask.standardOutput = Pipe()
             killTask.standardError = Pipe()
-            
+
             do {
                 try killTask.run()
                 killTask.waitUntilExit()
-                
-                // 等待服务器关闭
-                Thread.sleep(forTimeInterval: 0.5)
-                
-                // 启动 ADB 服务器并查询 mDNS 服务
+
+                // 等待服务器完全关闭
+                Thread.sleep(forTimeInterval: 1.0)
+
+                // 启动 ADB 服务器
+                let startTask = Process()
+                startTask.launchPath = "/bin/bash"
+                startTask.environment = environment
+                startTask.arguments = ["-c", "\(adbPath) start-server"]
+                startTask.standardOutput = Pipe()
+                startTask.standardError = Pipe()
+
+                try startTask.run()
+                startTask.waitUntilExit()
+
+                // 等待 mDNS 服务初始化
+                Thread.sleep(forTimeInterval: 2.0)
+
+                DispatchQueue.main.async {
+                    self.log("📡 开始扫描 mDNS 服务...")
+                }
+
+                // 查询 mDNS 服务
                 let mdnsTask = Process()
                 mdnsTask.launchPath = "/bin/bash"
                 mdnsTask.environment = environment
-                mdnsTask.arguments = ["-c", "\(adbPath) start-server && sleep 1 && \(adbPath) mdns services"]
-                
+                mdnsTask.arguments = ["-c", "\(adbPath) mdns services"]
+
                 let pipe = Pipe()
                 mdnsTask.standardOutput = pipe
                 mdnsTask.standardError = Pipe()
-                
+
                 try mdnsTask.run()
                 mdnsTask.waitUntilExit()
-                
+
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 guard let output = String(data: data, encoding: .utf8), !output.isEmpty else {
                     DispatchQueue.main.async {
                         self.log("⚠️ 未发现 mDNS 服务")
+                        self.log("💡 提示：请确保设备已开启「无线调试」")
                     }
                     completion([])
                     return
                 }
-                
+
                 DispatchQueue.main.async {
                     self.log("📡 mDNS 扫描结果：")
-                    self.log(output)
+                    for line in output.split(separator: "\n") {
+                        self.log(String(line))
+                    }
                 }
-                
+
                 // 解析 mDNS 服务列表
                 // 格式示例：
                 // List of discovered mdns services
                 // adb-XXXXXX-YYYYYY _adb-tls-connect._tcp 192.168.1.100:37381
                 var devices: [(String, String)] = []
                 let lines = output.split(separator: "\n").map(String.init)
-                
+
                 for line in lines {
                     // 跳过标题行
                     if line.contains("List of discovered") || line.isEmpty {
                         continue
                     }
-                    
-                    // 匹配包含 IP:Port 的行
-                    let components = line.split(separator: " ").map(String.init)
-                    if components.count >= 3 {
-                        // 查找 IP:Port 格式的部分
-                        for component in components {
-                            if component.contains(":") && component.contains(".") {
-                                let parts = component.split(separator: ":")
-                                if parts.count == 2 {
-                                    let ip = String(parts[0])
-                                    let port = String(parts[1])
-                                    
-                                    // 过滤 pairing 服务，只保留 connect 服务
-                                    if line.contains("_adb-tls-connect") || line.contains("_adb._tcp") {
+
+                    // 查找包含 IP:Port 的部分（支持更灵活的格式）
+                    // 匹配 _adb-tls-connect 或 _adb._tcp 服务
+                    if line.contains("_adb-tls-connect") || line.contains("_adb._tcp") {
+                        // 使用正则表达式提取 IP:Port
+                        if let regex = try? NSRegularExpression(pattern: "(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):(\\d+)", options: []) {
+                            let nsLine = line as NSString
+                            let matches = regex.matches(in: line, options: [], range: NSRange(location: 0, length: nsLine.length))
+
+                            for match in matches {
+                                if match.numberOfRanges >= 3 {
+                                    let ipRange = match.range(at: 1)
+                                    let portRange = match.range(at: 2)
+
+                                    let ip = nsLine.substring(with: ipRange)
+                                    let port = nsLine.substring(with: portRange)
+
+                                    // 避免重复添加
+                                    if !devices.contains(where: { $0.0 == ip && $0.1 == port }) {
                                         devices.append((ip, port))
                                         DispatchQueue.main.async {
                                             self.log("✓ 发现设备: \(ip):\(port)")
                                         }
                                     }
                                 }
-                                break
                             }
                         }
                     }
                 }
-                
+
                 DispatchQueue.main.async {
                     if devices.isEmpty {
                         self.log("⚠️ 未找到可连接的无线设备")
-                        self.log("💡 提示：请确保设备已启用「无线调试」并已配对")
+                        self.log("💡 提示1：请确保设备已启用「无线调试」")
+                        self.log("💡 提示2：设备和电脑需要在同一网络")
+                        self.log("💡 提示3：某些设备需要先通过配对码配对")
+                    } else {
+                        self.log("✅ 共发现 \(devices.count) 个设备")
                     }
                     completion(devices)
                 }
-                
+
             } catch {
                 DispatchQueue.main.async {
                     self.log("❌ mDNS 扫描失败: \(error.localizedDescription)", type: .error)
@@ -1375,14 +1719,14 @@ struct ContentView: View {
             log("⚠️ 正在扫描无线设备，请稍后")
             return
         }
-        
+
         isScanningWireless = true
         log("🔍 使用 mDNS 扫描无线 ADB 设备...")
-        
+
         DispatchQueue.global().async {
             // 清理离线设备
             let disconnectedDevices = self.getOfflineWirelessDevices(adbPath: adbPath)
-            
+
             for ip in disconnectedDevices {
                 let disconnectCmd = "\(adbPath) disconnect \(ip)"
                 let task = Process()
@@ -1394,32 +1738,45 @@ struct ContentView: View {
                 task.waitUntilExit()
                 DispatchQueue.main.async { self.log("⚠️ 已断开离线设备: \(ip)") }
             }
-            
+
+            // 获取当前已连接的设备列表
+            let connectedDevices = self.getConnectedDevices(adbPath: adbPath)
+
             // 使用官方 mDNS 扫描
             self.scanWirelessDevicesWithMDNS { devices in
-                guard !devices.isEmpty else {
+                // 过滤掉已经连接的设备
+                let newDevices = devices.filter { (ip, port) in
+                    let deviceId = "\(ip):\(port)"
+                    return !connectedDevices.contains(deviceId)
+                }
+
+                guard !newDevices.isEmpty else {
                     DispatchQueue.main.async {
-                        self.log("✓ 扫描完成，未发现新设备")
+                        if devices.isEmpty {
+                            self.log("✓ 扫描完成，未发现新设备")
+                        } else {
+                            self.log("✓ 扫描完成，发现的 \(devices.count) 个设备均已连接")
+                        }
                         self.isScanningWireless = false
                     }
                     return
                 }
 
                 DispatchQueue.main.async {
-                    self.log("✓ 发现 \(devices.count) 个潜在无线设备")
+                    self.log("✓ 发现 \(newDevices.count) 个未连接的无线设备")
                 }
 
                 func showNextDevice(_ index: Int) {
-                    guard index < devices.count else {
+                    guard index < newDevices.count else {
                         DispatchQueue.main.async {
                             self.log("✓ 无线设备扫描完成")
                             self.isScanningWireless = false
                         }
                         return
                     }
-                    
-                    let (ip, port) = devices[index]
-                    
+
+                    let (ip, port) = newDevices[index]
+
                     DispatchQueue.main.async {
                         let alert = NSAlert()
                         alert.messageText = "发现无线调试设备"
@@ -1427,7 +1784,7 @@ struct ContentView: View {
                         alert.addButton(withTitle: "连接")
                         alert.addButton(withTitle: "跳过")
                         alert.alertStyle = .informational
-                        
+
                         if let window = NSApplication.shared.windows.first {
                             alert.beginSheetModal(for: window) { response in
                                 if response == .alertFirstButtonReturn {
@@ -1439,17 +1796,18 @@ struct ContentView: View {
                                         let pipe = Pipe()
                                         task.standardOutput = pipe
                                         task.standardError = pipe
-                                        
+
                                         do {
                                             try task.run()
                                             task.waitUntilExit()
-                                            let output = try pipe.fileHandleForReading.readDataToEndOfFile()
+                                            let output = pipe.fileHandleForReading.readDataToEndOfFile()
                                             let result = String(data: output, encoding: .utf8) ?? ""
-                                            
+
                                             DispatchQueue.main.async {
                                                 if result.contains("connected") {
                                                     self.log("✅ 成功连接 \(ip):\(port)", type: .success)
-                                                    self.refreshAVDList()
+                                                    // 不再调用 refreshAVDList()，避免死循环
+                                                    // 设备列表会在下次手动刷新时更新
                                                 } else {
                                                     self.log("⚠️ 连接 \(ip):\(port) 失败: \(result)")
                                                 }
