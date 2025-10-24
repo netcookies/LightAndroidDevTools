@@ -830,27 +830,30 @@ struct ContentView: View {
     
     private func launchEmulator(_ avd: String) {
         isRunning = true
-        
+        startTaskTimer()
+
         DispatchQueue.global().async {
             let emulatorPath = NSHomeDirectory() + "/Library/Android/sdk/emulator/emulator"
             let androidHome = NSHomeDirectory() + "/Library/Android/sdk"
-            
+
             let task = Process()
             task.launchPath = "/bin/bash"
             task.environment = ProcessInfo.processInfo.environment.merging(["ANDROID_HOME": androidHome]) { _, new in new }
             task.arguments = ["-i", "-c", "\(emulatorPath) -avd \(avd) &"]
-            
+
             do {
                 try task.run()
                 DispatchQueue.main.async {
                     log("✓ 正在启动模拟器: \(avd)")
                     isRunning = false
+                    stopTaskTimer()
                     startEmulatorStatusCheck()
                 }
             } catch {
                 DispatchQueue.main.async {
                     log("❌ 启动失败：\(error.localizedDescription)", type: .error)
                     isRunning = false
+                    stopTaskTimer()
                 }
             }
         }
@@ -858,24 +861,27 @@ struct ContentView: View {
     
     private func killEmulator() {
         isRunning = true
-        
+        startTaskTimer()
+
         DispatchQueue.global().async {
             let cmd = "pkill -f 'emulator.*-avd'"
             let task = Process()
             task.launchPath = "/bin/bash"
             task.arguments = ["-i", "-c", cmd]
-            
+
             do {
                 try task.run()
                 task.waitUntilExit()
                 DispatchQueue.main.async {
                     log("✓ 已关闭模拟器")
                     isRunning = false
+                    stopTaskTimer()
                 }
             } catch {
                 DispatchQueue.main.async {
                     log("❌ 关闭失败：\(error.localizedDescription)", type: .error)
                     isRunning = false
+                    stopTaskTimer()
                 }
             }
         }
@@ -969,11 +975,12 @@ struct ContentView: View {
 
     private func buildAndSignRelease() {
         isRunning = true
-        
+        startTaskTimer()
+
         DispatchQueue.global().async {
             // 同步执行构建
             let success = self.executeCommandSync("cd \(self.projectPath) && ./gradlew assembleRelease", label: "编译Release APK")
-            
+
             if success {
                 // 构建成功后再签名
                 self.signAPK()
@@ -981,6 +988,7 @@ struct ContentView: View {
                 DispatchQueue.main.async {
                     self.log("❌ 编译失败，取消签名", type: .error)
                     self.isRunning = false
+                    self.stopTaskTimer()
                 }
             }
         }
@@ -1102,6 +1110,7 @@ struct ContentView: View {
                 self.lastTaskSuccess = false
             }
             self.isRunning = false
+            self.stopTaskTimer()
         }
     }
     
@@ -1272,24 +1281,27 @@ struct ContentView: View {
     
     private func executeCommandSync(_ command: String, label: String) -> Bool {
         let androidHome = NSHomeDirectory() + "/Library/Android/sdk"
-        
+        let processId = UUID()
+
         let task = Process()
         task.launchPath = "/bin/bash"
         task.environment = ProcessInfo.processInfo.environment.merging(["ANDROID_HOME": androidHome]) { _, new in new }
         task.arguments = ["-i", "-c", command]
-        
+
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         task.standardOutput = stdoutPipe
         task.standardError = stderrPipe
-        
+
         let stdoutHandle = stdoutPipe.fileHandleForReading
         let stderrHandle = stderrPipe.fileHandleForReading
-        
+
         DispatchQueue.main.async {
             self.log("▶️ \(label)...")
+            self.activeProcesses.insert(processId)
+            self.currentRunningProcess = task
         }
-        
+
         // 使用 readabilityHandler 实时读取输出
         stdoutHandle.readabilityHandler = { handle in
             let data = handle.availableData
@@ -1300,7 +1312,7 @@ struct ContentView: View {
                 }
             }
         }
-        
+
         stderrHandle.readabilityHandler = { handle in
             let data = handle.availableData
             if !data.isEmpty, let output = String(data: data, encoding: .utf8) {
@@ -1311,49 +1323,54 @@ struct ContentView: View {
                 }
             }
         }
-        
+
         do {
             try task.run()
             task.waitUntilExit() // 等待任务完成
-            
+
             // 清理 handler
             stdoutHandle.readabilityHandler = nil
             stderrHandle.readabilityHandler = nil
-            
+
             // 读取可能残留的输出
             let remainingStdout = stdoutHandle.readDataToEndOfFile()
             let remainingStderr = stderrHandle.readDataToEndOfFile()
-            
+
             if !remainingStdout.isEmpty, let output = String(data: remainingStdout, encoding: .utf8) {
                 let lines = output.split(separator: "\n").map(String.init)
                 DispatchQueue.main.async {
                     self.appendLogs(lines, type: .normal)
                 }
             }
-            
+
             if !remainingStderr.isEmpty, let output = String(data: remainingStderr, encoding: .utf8) {
                 let lines = output.split(separator: "\n").map(String.init)
                 DispatchQueue.main.async {
                     self.appendLogs(lines, type: .normal)
                 }
             }
-            
+
             let success = task.terminationStatus == 0
-            
+
             DispatchQueue.main.async {
+                self.activeProcesses.remove(processId)
+                self.currentRunningProcess = nil
+
                 if success {
                     self.log("✓ \(label) 完成", type: .success)
                 } else {
                     self.log("✗ \(label) 失败 (代码: \(task.terminationStatus))", type: .error)
                 }
             }
-            
+
             return success
         } catch {
             stdoutHandle.readabilityHandler = nil
             stderrHandle.readabilityHandler = nil
-            
+
             DispatchQueue.main.async {
+                self.activeProcesses.remove(processId)
+                self.currentRunningProcess = nil
                 self.log("❌ 执行失败：\(error.localizedDescription)", type: .error)
             }
             return false
