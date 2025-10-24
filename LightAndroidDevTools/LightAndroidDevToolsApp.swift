@@ -396,36 +396,12 @@ struct ContentView: View {
 
                 Spacer()
 
-                if isRunning {
-                    Button(action: stopCurrentTask) {
-                        HStack(spacing: 6) {
-                            Text(formatDuration(taskDuration))
-                                .font(.system(size: 13, design: .monospaced))
-                                .foregroundColor(.secondary)
-                            Image(systemName: "stop.circle.fill")
-                                .foregroundColor(.red)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color(.controlBackgroundColor))
-                        .cornerRadius(6)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .help("停止任务")
-                } else if let success = lastTaskSuccess {
-                    HStack(spacing: 6) {
-                        Image(systemName: success ? "checkmark.circle.fill" : "xmark.circle.fill")
-                            .foregroundColor(success ? .green : .red)
-                            .font(.system(size: 16))
-                        Text(success ? "完成" : "失败")
-                            .font(.caption)
-                            .foregroundColor(success ? .green : .red)
-                    }
-                }
+                TaskStatusIndicator(
+                    isRunning: isRunning,
+                    taskDuration: taskDuration,
+                    lastTaskSuccess: lastTaskSuccess,
+                    onStop: stopCurrentTask
+                )
 
                 Button(action: { isCompactMode = true }) {
                     Image(systemName: "sidebar.left")
@@ -488,33 +464,12 @@ struct ContentView: View {
 
                 Spacer()
 
-                if isRunning {
-                    Button(action: stopCurrentTask) {
-                        HStack(spacing: 4) {
-                            Text(formatDuration(taskDuration))
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(.secondary)
-                            Image(systemName: "stop.circle.fill")
-                                .font(.system(size: 12))
-                                .foregroundColor(.red)
-                        }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color(.controlBackgroundColor))
-                        .cornerRadius(4)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4)
-                                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .help("停止任务")
-                } else if let success = lastTaskSuccess {
-                    Image(systemName: success ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundColor(success ? .green : .red)
-                        .font(.system(size: 14))
-                        .help(success ? "完成" : "失败")
-                }
+                CompactTaskStatusIndicator(
+                    isRunning: isRunning,
+                    taskDuration: taskDuration,
+                    lastTaskSuccess: lastTaskSuccess,
+                    onStop: stopCurrentTask
+                )
 
                 Button(action: { isCompactMode = false }) {
                     Image(systemName: "sidebar.right")
@@ -1927,5 +1882,112 @@ struct UnifiedSegmentedPicker<SelectionValue: Hashable, Content: View>: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: width, height: height)
+    }
+}
+
+// 任务状态指示器
+struct TaskStatusIndicator: View {
+    let isRunning: Bool
+    let taskDuration: TimeInterval
+    let lastTaskSuccess: Bool?
+    let onStop: () -> Void
+    let height: CGFloat = 28
+    
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let minutes = Int(duration) / 60
+        let seconds = Int(duration) % 60
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+    
+    var body: some View {
+        Group {
+            if isRunning {
+                Button(action: onStop) {
+                    HStack(spacing: 6) {
+                        Text(formatDuration(taskDuration))
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(.secondary)
+                        Image(systemName: "stop.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(.red)
+                    }
+                    .frame(height: height)
+                    .padding(.horizontal, 10)
+                    .background(Color(.controlBackgroundColor))
+                    .cornerRadius(6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("停止任务")
+            } else if let success = lastTaskSuccess {
+                HStack(spacing: 6) {
+                    Image(systemName: success ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundColor(success ? .green : .red)
+                        .font(.system(size: 16))
+                    Text(success ? "完成" : "失败")
+                        .font(.caption)
+                        .foregroundColor(success ? .green : .red)
+                }
+                .frame(height: height)
+                .padding(.horizontal, 10)
+                .background(Color(.controlBackgroundColor))
+                .cornerRadius(6)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                )
+            }
+        }
+    }
+}
+
+// Compact 模式的状态指示器（更小的版本）
+struct CompactTaskStatusIndicator: View {
+    let isRunning: Bool
+    let taskDuration: TimeInterval
+    let lastTaskSuccess: Bool?
+    let onStop: () -> Void
+    let height: CGFloat = 28
+    
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let minutes = Int(duration) / 60
+        let seconds = Int(duration) % 60
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+    
+    var body: some View {
+        Group {
+            if isRunning {
+                Button(action: onStop) {
+                    HStack(spacing: 4) {
+                        Text(formatDuration(taskDuration))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
+                        Image(systemName: "stop.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(.red)
+                    }
+                    .frame(height: height)
+                    .padding(.horizontal, 6)
+                    .background(Color(.controlBackgroundColor))
+                    .cornerRadius(4)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("停止任务")
+            } else if let success = lastTaskSuccess {
+                Image(systemName: success ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundColor(success ? .green : .red)
+                    .font(.system(size: 16))
+                    .frame(width: height, height: height)
+                    .help(success ? "完成" : "失败")
+            }
+        }
     }
 }
