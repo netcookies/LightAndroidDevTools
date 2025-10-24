@@ -12,7 +12,7 @@ struct LightAndroidDevToolsApp: App {
                 let compact = UserDefaults.standard.bool(forKey: "isCompactMode")
                 if let window = NSApplication.shared.windows.first {
                     if (compact) {
-                        window.setContentSize(NSSize(width: 650, height: 70))
+                        window.setContentSize(NSSize(width: 333, height: 70))
                         window.level = .floating
                     } else {
                         window.setContentSize(NSSize(width: 900, height: 650))
@@ -28,7 +28,7 @@ struct LightAndroidDevToolsApp: App {
                    let screen = window.screen ?? NSScreen.main {
 
                     if isCompactMode {
-                        let newSize = NSSize(width: 650, height: 70)
+                        let newSize = NSSize(width: 333, height: 70)
                         window.setContentSize(newSize)
 
                         let screenFrame = screen.visibleFrame
@@ -275,8 +275,7 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundColor(.gray)
                         HStack {
-                            TextField("选择项目目录", text: $projectPath)
-                                .textFieldStyle(.roundedBorder)
+                            UnifiedTextField(placeholder: "选择项目目录", text: $projectPath)
                             Button(action: selectProjectPath) {
                                 Text("选择")
                             }
@@ -290,31 +289,29 @@ struct ContentView: View {
                         Text("设备")
                             .font(.caption)
                             .foregroundColor(.gray)
-                        Picker("", selection: $selectedAVD) {
+                        UnifiedPicker(selection: $selectedAVD, width: 325) {
                             Text("选择设备").tag(nil as String?)
                             ForEach(avdList, id: \.self) { avd in
                                 Text(avd).tag(avd as String?)
                             }
                         }
-                        .frame(width: 325)
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("构建类型")
                             .font(.caption)
                             .foregroundColor(.gray)
-                        Picker("", selection: $buildType) {
+                        UnifiedSegmentedPicker(selection: $buildType) {
                             Text("Debug").tag("debug")
                             Text("Release").tag("release")
                         }
-                        .pickerStyle(.segmented)
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("应用模块")
                             .font(.caption)
                             .foregroundColor(.gray)
-                        Picker("", selection: $selectedAppModule) {
+                        UnifiedPicker(selection: $selectedAppModule) {
                             ForEach(detectedModules.isEmpty ? ["app"] : detectedModules, id: \.self) { module in
                                 Text(module).tag(module)
                             }
@@ -546,7 +543,7 @@ struct ContentView: View {
                 .disabled(selectedAVD == nil)
                 .help(emulatorRunning ? "关闭模拟器" : "启动模拟器")
 
-                Picker("", selection: $selectedAVD) {
+                UnifiedPicker(selection: $selectedAVD) {
                     Text("选择设备").tag(nil as String?)
                     ForEach(avdList, id: \.self) { avd in
                         Text(avd).tag(avd as String?)
@@ -556,12 +553,10 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
                 .disabled(isRunning)
 
-                Picker("", selection: $buildType) {
+                UnifiedSegmentedPicker(selection: $buildType, width: 120) {
                     Text("Debug").tag("debug")
                     Text("Release").tag("release")
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 120)
                 .disabled(isRunning)
                 .help("构建类型")
             }
@@ -1858,5 +1853,79 @@ struct LineFrameKey: PreferenceKey {
     static var defaultValue: [UUID: CGRect] = [:]
     static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
         value.merge(nextValue()) { $1 }
+    }
+}
+
+struct UnifiedTextField: View {
+    let placeholder: String
+    @Binding var text: String
+    let height: CGFloat = 28
+    
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color(NSColor.textBackgroundColor))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+                )
+            
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 8)
+        }
+        .frame(height: height)
+    }
+}
+
+// Picker 包装器
+struct UnifiedPicker<SelectionValue: Hashable, Content: View>: View {
+    let selection: Binding<SelectionValue>
+    let content: () -> Content
+    let height: CGFloat = 28
+    let width: CGFloat?
+    
+    init(selection: Binding<SelectionValue>, width: CGFloat? = nil, @ViewBuilder content: @escaping () -> Content) {
+        self.selection = selection
+        self.width = width
+        self.content = content
+    }
+    
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color(NSColor.controlBackgroundColor))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+                )
+            
+            Picker("", selection: selection, content: content)
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .padding(.horizontal, 4)
+        }
+        .frame(width: width, height: height)
+    }
+}
+
+// Segmented Picker 包装器（用于 Debug/Release 选择）
+struct UnifiedSegmentedPicker<SelectionValue: Hashable, Content: View>: View {
+    let selection: Binding<SelectionValue>
+    let content: () -> Content
+    let height: CGFloat = 28
+    let width: CGFloat?
+    
+    init(selection: Binding<SelectionValue>, width: CGFloat? = nil, @ViewBuilder content: @escaping () -> Content) {
+        self.selection = selection
+        self.width = width
+        self.content = content
+    }
+    
+    var body: some View {
+        Picker("", selection: selection, content: content)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: width, height: height)
     }
 }
