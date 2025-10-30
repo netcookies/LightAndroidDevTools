@@ -80,7 +80,7 @@ class AppViewModel: ObservableObject {
         }
 
         Task {
-            await refreshWirelessDevices()
+            refreshWirelessDevices()
         }
     }
 
@@ -100,7 +100,7 @@ class AppViewModel: ObservableObject {
 
         Task {
             let command = "cd \(settings.projectPath) && ./gradlew compileDebugSources"
-            await executeCommandAsync(command, label: "编译")
+            executeCommandAsync(command, label: "编译")
         }
     }
 
@@ -120,7 +120,7 @@ class AppViewModel: ObservableObject {
                 ) ?? "MainActivity"
 
                 let cmd = "cd \(settings.projectPath) && ./gradlew \(gradleTask) && sleep 2 && \(AppConfig.AndroidSDK.adbPath) shell am start -n \(packageName)/.\(mainActivity)"
-                await executeCommandAsync(cmd, label: "编译并运行")
+                executeCommandAsync(cmd, label: "编译并运行")
             } else {
                 logManager.log("❌ 无法解析包名,请检查 build.gradle", type: .error)
                 isRunning = false
@@ -137,7 +137,7 @@ class AppViewModel: ObservableObject {
             isRunning = true
             Task {
                 let command = "cd \(settings.projectPath) && ./gradlew assembleDebug"
-                await executeCommandAsync(command, label: "编译Debug APK")
+                executeCommandAsync(command, label: "编译Debug APK")
             }
         }
     }
@@ -159,9 +159,9 @@ class AppViewModel: ObservableObject {
             guard let self = self else { return }
 
             // Create a local CommandExecutor for background use
-            let executor = CommandExecutor()
+            let executor = await CommandExecutor()
 
-            let success = executor.executeSync(
+            let success = await executor.executeSync(
                 "cd \(projectPath) && ./gradlew assembleRelease",
                 label: "编译Release APK"
             ) { lines, type in
@@ -236,7 +236,7 @@ class AppViewModel: ObservableObject {
                 logManager.log("📦 找到 APK：\(apkPath)")
 
                 let installCmd = "\(adbPath) install -r \"\(apkPath)\""
-                await executeCommandAsync(installCmd, label: "安装\(buildVariant.capitalized) APK")
+                executeCommandAsync(installCmd, label: "安装\(buildVariant.capitalized) APK")
 
             } catch {
                 logManager.log("❌ 无法读取APK目录: \(error.localizedDescription)", type: .error)
@@ -254,7 +254,7 @@ class AppViewModel: ObservableObject {
 
         Task {
             let command = "\(AppConfig.AndroidSDK.adbPath) shell input text \(code)"
-            await executeCommandAsync(command, label: "授权设备")
+            executeCommandAsync(command, label: "授权设备")
         }
     }
 
@@ -366,7 +366,9 @@ class AppViewModel: ObservableObject {
         cleanupTimer()
 
         emulatorCheckTimer = Timer.scheduledTimer(withTimeInterval: AppConfig.Timing.emulatorCheckInterval, repeats: true) { [weak self] _ in
-            self?.checkEmulatorStatus()
+            Task { @MainActor [weak self] in
+                self?.checkEmulatorStatus()
+            }
         }
         RunLoop.main.add(emulatorCheckTimer!, forMode: .common)
         checkEmulatorStatus()
@@ -393,8 +395,10 @@ class AppViewModel: ObservableObject {
         taskDuration = 0
         taskDurationTimer?.invalidate()
         taskDurationTimer = Timer.scheduledTimer(withTimeInterval: AppConfig.Timing.taskTimerInterval, repeats: true) { [weak self] _ in
-            guard let self = self, let startTime = self.taskStartTime else { return }
-            self.taskDuration = Date().timeIntervalSince(startTime)
+            Task { @MainActor [weak self] in
+                guard let self = self, let startTime = self.taskStartTime else { return }
+                self.taskDuration = Date().timeIntervalSince(startTime)
+            }
         }
         RunLoop.main.add(taskDurationTimer!, forMode: .common)
     }
@@ -450,7 +454,7 @@ class AppViewModel: ObservableObject {
         storePassword: String,
         keyPassword: String
     ) async {
-        let buildToolsPath = AppConfig.AndroidSDK.buildToolsPath
+        let buildToolsPath = await AppConfig.AndroidSDK.buildToolsPath
         let apkDir = "\(projectPath)/\(selectedModule)/build/outputs/apk/release"
         let releasePath = "\(projectPath)/\(selectedModule)/release"
         let unsignedAPK = "\(apkDir)/app-release-unsigned.apk"
@@ -502,7 +506,7 @@ class AppViewModel: ObservableObject {
         }
 
         // Step 1: zipalign
-        let zipalignSuccess = executor.executeSync(
+        let zipalignSuccess = await executor.executeSync(
             "\(buildToolsPath)/zipalign -v -p 4 \"\(unsignedAPK)\" \"\(alignedAPK)\"",
             label: "对齐APK"
         ) { [weak self] lines, type in
@@ -521,7 +525,7 @@ class AppViewModel: ObservableObject {
         }
 
         // Step 2: Sign
-        let signSuccess = executor.executeSync(
+        let signSuccess = await executor.executeSync(
             "\(buildToolsPath)/apksigner sign --ks \"\(keystorePath)\" --ks-key-alias \"\(keyAlias)\" --ks-pass pass:\(storePassword) --key-pass pass:\(keyPassword) --out \"\(finalAPK)\" \"\(alignedAPK)\"",
             label: "签名APK"
         ) { [weak self] lines, type in
@@ -540,7 +544,7 @@ class AppViewModel: ObservableObject {
         }
 
         // Step 3: Verify
-        let verifySuccess = executor.executeSync(
+        let verifySuccess = await executor.executeSync(
             "\(buildToolsPath)/apksigner verify \"\(finalAPK)\"",
             label: "验证签名"
         ) { [weak self] lines, type in
@@ -558,6 +562,7 @@ class AppViewModel: ObservableObject {
 
                 // Cleanup intermediate files
                 do {
+                    let fileManager = FileManager.default
                     if fileManager.fileExists(atPath: alignedAPK) {
                         try fileManager.removeItem(atPath: alignedAPK)
                     }
