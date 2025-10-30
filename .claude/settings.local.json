@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcodebuild:*)",
+      "WebSearch",
+      "WebFetch(domain:stackoverflow.com)",
+      "WebFetch(domain:forums.swift.org)",
+      "Bash(mkdir -p LightAndroidDevTools/Config LightAndroidDevTools/Models LightAndroidDevTools/Services LightAndroidDevTools/Views LightAndroidDevTools/Extensions)",
+      "Bash(mkdir:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
