@@ -165,15 +165,90 @@ final class CommandExecutor: @unchecked Sendable {
         }
     }
 
+    /// Stop all Gradle daemon processes to prevent lock contention
+    nonisolated func stopGradleDaemons(projectPath: String, outputHandler: @escaping OutputHandler) {
+        outputHandler(["🔍 检查 Gradle 守护进程..."], .normal)
+
+        // First, try to stop daemons gracefully using gradlew
+        let gracefulStopTask = createProcess(command: "cd \(projectPath) && ./gradlew --stop 2>&1")
+        let stopPipe = Pipe()
+        gracefulStopTask.standardOutput = stopPipe
+        gracefulStopTask.standardError = stopPipe
+
+        do {
+            try gracefulStopTask.run()
+            gracefulStopTask.waitUntilExit()
+
+            if let output = String(data: stopPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8), !output.isEmpty {
+                let lines = output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+                if !lines.isEmpty {
+                    outputHandler(lines, .normal)
+                }
+            }
+
+            if gracefulStopTask.terminationStatus == 0 {
+                outputHandler(["✓ Gradle 守护进程已停止"], .success)
+            }
+        } catch {
+            outputHandler(["⚠️ 停止 Gradle 守护进程时出错: \(error.localizedDescription)"], .normal)
+        }
+
+        // Wait a bit for daemons to fully terminate
+        Thread.sleep(forTimeInterval: 0.5)
+
+        // Additionally, forcefully kill any remaining Gradle daemon processes
+        let killTask = createProcess(command: "pkill -f 'GradleDaemon' 2>/dev/null || true")
+        try? killTask.run()
+        killTask.waitUntilExit()
+
+        outputHandler(["✓ Gradle 锁检查完成"], .success)
+    }
+
+    /// Check if Gradle lock files exist and optionally remove stale locks
+    nonisolated func checkGradleLocks(outputHandler: @escaping OutputHandler) -> Bool {
+        let gradleCachePath = NSHomeDirectory() + "/.gradle/caches"
+        let fileManager = FileManager.default
+
+        guard fileManager.fileExists(atPath: gradleCachePath) else {
+            return true // No cache directory, no locks to worry about
+        }
+
+        // Check for journal lock
+        let journalLockPath = gradleCachePath + "/journal-1/journal-1.lock"
+        if fileManager.fileExists(atPath: journalLockPath) {
+            // Check if lock file can be read (might indicate stale lock)
+            do {
+                let attributes = try fileManager.attributesOfItem(atPath: journalLockPath)
+                if let modDate = attributes[.modificationDate] as? Date {
+                    let age = Date().timeIntervalSince(modDate)
+                    if age > 300 { // Lock older than 5 minutes might be stale
+                        outputHandler(["⚠️ 检测到过期的 Gradle 锁文件 (已存在 \(Int(age/60)) 分钟)"], .normal)
+                        return false
+                    }
+                }
+            } catch {
+                // Couldn't check lock attributes
+            }
+        }
+
+        return true
+    }
+
     // MARK: - Private Methods
 
-    private func createProcess(command: String) -> Process {
+    private nonisolated func createProcess(command: String) -> Process {
+        // Cache config values to avoid actor isolation issues
+        let shellPath = "/bin/bash"
+        let shellArgPrefix = "-i"
+        let shellArgCommand = "-c"
+        let androidHome = NSHomeDirectory() + "/Library/Android/sdk"
+
         let task = Process()
-        task.launchPath = AppConfig.Process.shellPath
+        task.launchPath = shellPath
         task.environment = ProcessInfo.processInfo.environment.merging(
-            ["ANDROID_HOME": AppConfig.AndroidSDK.homeDirectory]
+            ["ANDROID_HOME": androidHome]
         ) { _, new in new }
-        task.arguments = [AppConfig.Process.shellArgPrefix, AppConfig.Process.shellArgCommand, command]
+        task.arguments = [shellArgPrefix, shellArgCommand, command]
         return task
     }
 }

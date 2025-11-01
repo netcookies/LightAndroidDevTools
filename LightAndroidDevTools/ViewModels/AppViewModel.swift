@@ -99,6 +99,7 @@ class AppViewModel: ObservableObject {
         isRunning = true
 
         Task {
+            await prepareGradleEnvironment()
             let command = "cd \(settings.projectPath) && ./gradlew compileDebugSources"
             executeCommandAsync(command, label: "编译")
         }
@@ -109,6 +110,7 @@ class AppViewModel: ObservableObject {
         isRunning = true
 
         Task {
+            await prepareGradleEnvironment()
             if let packageName = androidService.getPackageName(
                 projectPath: settings.projectPath,
                 module: settings.selectedAppModule
@@ -136,6 +138,7 @@ class AppViewModel: ObservableObject {
         } else {
             isRunning = true
             Task {
+                await prepareGradleEnvironment()
                 let command = "cd \(settings.projectPath) && ./gradlew assembleDebug"
                 executeCommandAsync(command, label: "编译Debug APK")
             }
@@ -144,7 +147,6 @@ class AppViewModel: ObservableObject {
 
     func buildAndSignRelease() {
         isRunning = true
-        startTaskTimer()
 
         // Capture values needed for background work
         let projectPath = settings.projectPath
@@ -154,39 +156,52 @@ class AppViewModel: ObservableObject {
         let storePassword = settings.storePassword
         let keyPassword = settings.keyPassword
 
-        // Run blocking operations on background thread to avoid UI freezing
-        Task.detached { [weak self] in
-            guard let self = self else { return }
+        Task {
+            await prepareGradleEnvironment()
 
-            // Create a local CommandExecutor for background use
-            let executor = await CommandExecutor()
+            // Use executeAsync for real-time log output (like other build commands)
+            let processId = UUID()
+            let command = "cd \(projectPath) && ./gradlew assembleRelease"
 
-            let success = await executor.executeSync(
-                "cd \(projectPath) && ./gradlew assembleRelease",
-                label: "编译Release APK"
-            ) { lines, type in
+            let process = commandExecutor.executeAsync(
+                command,
+                label: "编译Release APK",
+                processId: processId
+            ) { [weak self] lines, type in
                 Task { @MainActor [weak self] in
                     self?.logManager.appendLogs(lines, type: type)
                 }
-            }
+            } completionHandler: { [weak self] success in
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    self.activeProcesses.remove(processId)
+                    self.currentRunningProcess = nil
 
-            if success {
-                await self.performSignAPK(
-                    executor: executor,
-                    projectPath: projectPath,
-                    selectedModule: selectedModule,
-                    keystorePath: keystorePath,
-                    keyAlias: keyAlias,
-                    storePassword: storePassword,
-                    keyPassword: keyPassword
-                )
-            } else {
-                await MainActor.run {
-                    self.logManager.log("❌ 编译失败,取消签名", type: .error)
-                    self.isRunning = false
-                    self.stopTaskTimer()
+                    if success {
+                        self.logManager.log("✓ 编译Release APK 完成", type: .success)
+                        // Now perform signing in background thread
+                        Task.detached { [weak self] in
+                            guard let self = self else { return }
+                            await self.performSignAPK(
+                                projectPath: projectPath,
+                                selectedModule: selectedModule,
+                                keystorePath: keystorePath,
+                                keyAlias: keyAlias,
+                                storePassword: storePassword,
+                                keyPassword: keyPassword
+                            )
+                        }
+                    } else {
+                        self.logManager.log("✗ 编译Release APK 失败", type: .error)
+                        self.isRunning = false
+                        self.stopTaskTimer()
+                    }
                 }
             }
+
+            activeProcesses.insert(processId)
+            currentRunningProcess = process
+            startTaskTimer()
         }
     }
 
@@ -301,6 +316,38 @@ class AppViewModel: ObservableObject {
     private func loadInitialData() {
         refreshAVDList()
         detectModules()
+    }
+
+    /// Prepare Gradle environment by stopping existing daemons to prevent lock issues
+    private nonisolated func prepareGradleEnvironment() async {
+        let executor = await CommandExecutor()
+        let projectPath = await self.settings.projectPath
+
+        // Stop any existing Gradle daemons
+        await withCheckedContinuation { continuation in
+            executor.stopGradleDaemons(projectPath: projectPath) { [weak self] lines, type in
+                Task { @MainActor [weak self] in
+                    self?.logManager.appendLogs(lines, type: type)
+                }
+            }
+            continuation.resume()
+        }
+
+        // Check for stale locks
+        let locksOk = await withCheckedContinuation { continuation in
+            let result = executor.checkGradleLocks { [weak self] lines, type in
+                Task { @MainActor [weak self] in
+                    self?.logManager.appendLogs(lines, type: type)
+                }
+            }
+            continuation.resume(returning: result)
+        }
+
+        if !locksOk {
+            await MainActor.run { [weak self] in
+                self?.logManager.log("💡 提示: 如果构建仍然失败，请尝试在终端运行: ./gradlew --stop", type: .normal)
+            }
+        }
     }
 
     private func detectModules() {
@@ -446,7 +493,6 @@ class AppViewModel: ObservableObject {
 
     /// Perform APK signing in background thread (nonisolated to avoid blocking main thread)
     private nonisolated func performSignAPK(
-        executor: CommandExecutor,
         projectPath: String,
         selectedModule: String,
         keystorePath: String,
@@ -454,6 +500,8 @@ class AppViewModel: ObservableObject {
         storePassword: String,
         keyPassword: String
     ) async {
+        // Create executor in background context
+        let executor = await CommandExecutor()
         let buildToolsPath = await AppConfig.AndroidSDK.buildToolsPath
         let apkDir = "\(projectPath)/\(selectedModule)/build/outputs/apk/release"
         let releasePath = "\(projectPath)/\(selectedModule)/release"
