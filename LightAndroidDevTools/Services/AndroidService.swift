@@ -14,6 +14,58 @@ class AndroidService {
 
     // MARK: - AVD Management
 
+    /// Convert selected device name to actual device ID
+    /// Returns the device ID if found, or the input if it's already a device ID
+    func getDeviceId(from selectedDevice: String) -> String? {
+        // If it looks like a device ID already (contains "emulator-", ":", or looks like a serial)
+        if selectedDevice.contains("emulator-") ||
+           selectedDevice.contains(":") ||
+           selectedDevice.range(of: "^[A-Z0-9]+$", options: .regularExpression) != nil {
+            return selectedDevice
+        }
+
+        // Otherwise, it's an AVD name - need to find the corresponding running emulator
+        let adbPath = AppConfig.AndroidSDK.adbPath
+        let task = Process()
+        task.launchPath = AppConfig.Process.shellPath
+        task.environment = ProcessInfo.processInfo.environment.merging(
+            ["ANDROID_HOME": AppConfig.AndroidSDK.homeDirectory]
+        ) { _, new in new }
+
+        // Use adb devices -l to get detailed device list with AVD names
+        task.arguments = [AppConfig.Process.shellArgPrefix, AppConfig.Process.shellArgCommand, "\(adbPath) devices -l"]
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                // Parse output to find device ID matching the AVD name
+                // Output format: "emulator-5554  device product:... model:... device:... transport_id:..."
+                // or with avd: "emulator-5554  device ... avd:<avd_name>"
+                let lines = output.split(separator: "\n")
+                for line in lines {
+                    let lineStr = String(line)
+                    // Check if this line contains our AVD name
+                    if lineStr.contains(selectedDevice) {
+                        // Extract device ID (first column)
+                        if let deviceId = lineStr.split(separator: " ").first {
+                            return String(deviceId)
+                        }
+                    }
+                }
+            }
+        } catch {
+            return nil
+        }
+
+        return nil
+    }
+
     /// Get list of available AVDs and connected devices
     func getAVDList() -> [String] {
         let emulatorPath = AppConfig.AndroidSDK.emulatorPath

@@ -121,7 +121,13 @@ class AppViewModel: ObservableObject {
                     module: settings.selectedAppModule
                 ) ?? "MainActivity"
 
-                let cmd = "cd \(settings.projectPath) && ./gradlew \(gradleTask) && sleep 2 && \(AppConfig.AndroidSDK.adbPath) shell am start -n \(packageName)/.\(mainActivity)"
+                // Add device selector if a device is selected
+                var deviceSelector = ""
+                if let selectedDevice = selectedAVD,
+                   let deviceId = androidService.getDeviceId(from: selectedDevice) {
+                    deviceSelector = "-s \(deviceId) "
+                }
+                let cmd = "cd \(settings.projectPath) && ./gradlew \(gradleTask) && sleep 2 && \(AppConfig.AndroidSDK.adbPath) \(deviceSelector)shell am start -n \(packageName)/.\(mainActivity)"
                 executeCommandAsync(cmd, label: "编译并运行")
             } else {
                 logManager.log("❌ 无法解析包名,请检查 build.gradle", type: .error)
@@ -250,7 +256,13 @@ class AppViewModel: ObservableObject {
                 let apkPath = "\(apkSearchPath)/\(apkName)"
                 logManager.log("📦 找到 APK：\(apkPath)")
 
-                let installCmd = "\(adbPath) install -r \"\(apkPath)\""
+                // Add device selector if a device is selected
+                var deviceSelector = ""
+                if let selectedDevice = selectedAVD,
+                   let deviceId = androidService.getDeviceId(from: selectedDevice) {
+                    deviceSelector = "-s \(deviceId) "
+                }
+                let installCmd = "\(adbPath) \(deviceSelector)install -r \"\(apkPath)\""
                 executeCommandAsync(installCmd, label: "安装\(buildVariant.capitalized) APK")
 
             } catch {
@@ -268,7 +280,13 @@ class AppViewModel: ObservableObject {
         authCode = ""
 
         Task {
-            let command = "\(AppConfig.AndroidSDK.adbPath) shell input text \(code)"
+            // Add device selector if a device is selected
+            var deviceSelector = ""
+            if let selectedDevice = selectedAVD,
+               let deviceId = androidService.getDeviceId(from: selectedDevice) {
+                deviceSelector = "-s \(deviceId) "
+            }
+            let command = "\(AppConfig.AndroidSDK.adbPath) \(deviceSelector)shell input text \(code)"
             executeCommandAsync(command, label: "授权设备")
         }
     }
