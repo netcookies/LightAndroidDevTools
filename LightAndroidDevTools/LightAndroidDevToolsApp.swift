@@ -71,10 +71,14 @@ struct ContentView: View {
         .onDisappear {
             viewModel.onDisappear()
         }
-        .onChange(of: isCompactMode) {
-            viewModel.startEmulatorStatusCheck()
-            if !isCompactMode {
-                viewModel.scrollToEnd = true
+        .onChange(of: isCompactMode) { oldValue, newValue in
+            Task { @MainActor in
+                viewModel.startEmulatorStatusCheck()
+                if !newValue {
+                    // Small delay to ensure view is loaded before scrolling
+                    try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 second
+                    viewModel.scrollToEnd = true
+                }
             }
         }
         .onChange(of: viewModel.settings.projectPath) {
@@ -85,6 +89,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $viewModel.showAuthDialog) {
             AuthDialog(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.showWirelessDeviceDialog) {
+            WirelessDeviceDialog(viewModel: viewModel)
         }
     }
 }
@@ -160,7 +167,7 @@ struct FullView: View {
 
             // Toolbar
             HStack(spacing: 12) {
-                Button(action: viewModel.refreshAVDList) {
+                Button(action: { viewModel.refreshAVDList(scanWireless: true) }) {
                     HStack(spacing: 4) {
                         Image(systemName: "arrow.clockwise")
                             .frame(width: AppConfig.UI.iconFrameSize, height: AppConfig.UI.iconFrameSize)
@@ -326,7 +333,7 @@ struct CompactView: View {
 
             // Device Selector
             HStack(spacing: 8) {
-                Button(action: viewModel.refreshAVDList) {
+                Button(action: { viewModel.refreshAVDList(scanWireless: true) }) {
                     Image(systemName: "arrow.clockwise")
                         .frame(width: AppConfig.UI.iconFrameSize, height: AppConfig.UI.iconFrameSize)
                 }
@@ -455,5 +462,61 @@ struct AuthDialog: View {
         }
         .padding()
         .frame(width: AppConfig.Dialog.authWidth)
+    }
+}
+
+// MARK: - Wireless Device Dialog
+
+struct WirelessDeviceDialog: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("发现的无线设备")
+                .font(.headline)
+
+            if viewModel.discoveredWirelessDevices.isEmpty {
+                Text("未发现任何设备")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+                    .padding()
+            } else {
+                VStack(spacing: 8) {
+                    Text("选择要连接的设备：")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+
+                    ScrollView {
+                        VStack(spacing: 8) {
+                            ForEach(viewModel.discoveredWirelessDevices, id: \.self) { device in
+                                HStack {
+                                    Image(systemName: "wifi")
+                                        .foregroundColor(.blue)
+                                    Text(device)
+                                        .font(.system(.body, design: .monospaced))
+                                    Spacer()
+                                    Button("连接") {
+                                        viewModel.showWirelessDeviceDialog = false
+                                        viewModel.connectToWirelessDevice(device)
+                                    }
+                                    .buttonStyle(PrimaryButtonStyle())
+                                }
+                                .padding(10)
+                                .background(Color(.controlBackgroundColor))
+                                .cornerRadius(6)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 300)
+                }
+            }
+
+            Button("关闭") {
+                viewModel.showWirelessDeviceDialog = false
+            }
+            .buttonStyle(SecondaryButtonStyle())
+        }
+        .padding()
+        .frame(width: 450)
     }
 }

@@ -279,4 +279,162 @@ class AndroidService {
         let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return Set(output.split(separator: "\n").map(String.init).filter { !$0.isEmpty })
     }
+
+    // MARK: - mDNS Wireless Discovery
+
+    /// Restart ADB server with mDNS support enabled
+    func restartADBWithMDNS() async -> Bool {
+        let adbPath = AppConfig.AndroidSDK.adbPath
+
+        // First, kill the ADB server
+        let killTask = Process()
+        killTask.launchPath = AppConfig.Process.shellPath
+        killTask.environment = ProcessInfo.processInfo.environment.merging(
+            ["ANDROID_HOME": AppConfig.AndroidSDK.homeDirectory]
+        ) { _, new in new }
+        killTask.arguments = [AppConfig.Process.shellArgPrefix, AppConfig.Process.shellArgCommand, "\(adbPath) kill-server"]
+
+        do {
+            try killTask.run()
+            killTask.waitUntilExit()
+        } catch {
+            return false
+        }
+
+        // Wait a bit for server to fully stop (non-blocking)
+        try? await Task.sleep(nanoseconds: UInt64(AppConfig.Timing.adbRestartDelay * 1_000_000_000))
+
+        // Start ADB server with mDNS enabled
+        let startTask = Process()
+        startTask.launchPath = AppConfig.Process.shellPath
+        startTask.environment = ProcessInfo.processInfo.environment.merging([
+            "ANDROID_HOME": AppConfig.AndroidSDK.homeDirectory,
+            "ADB_MDNS_OPENSCREEN": "1"
+        ]) { _, new in new }
+        startTask.arguments = [AppConfig.Process.shellArgPrefix, AppConfig.Process.shellArgCommand, "\(adbPath) start-server"]
+
+        do {
+            try startTask.run()
+            startTask.waitUntilExit()
+
+            // Wait for mDNS to initialize (non-blocking)
+            try? await Task.sleep(nanoseconds: UInt64(AppConfig.Timing.mdnsInitDelay * 1_000_000_000))
+
+            return startTask.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    /// Discover wireless devices using mDNS
+    /// Returns array of device info strings (e.g., ["Device Name (192.168.1.100:5555)"])
+    func discoverMDNSDevices() async -> [String] {
+        let adbPath = AppConfig.AndroidSDK.adbPath
+        let task = Process()
+        task.launchPath = AppConfig.Process.shellPath
+        task.environment = ProcessInfo.processInfo.environment.merging([
+            "ANDROID_HOME": AppConfig.AndroidSDK.homeDirectory,
+            "ADB_MDNS_OPENSCREEN": "1"
+        ]) { _, new in new }
+        task.arguments = [AppConfig.Process.shellArgPrefix, AppConfig.Process.shellArgCommand, "\(adbPath) mdns services"]
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+
+            guard let output = String(data: data, encoding: .utf8) else {
+                return []
+            }
+
+            // Parse mDNS output
+            // Expected format varies, but typically contains service names and addresses
+            var devices: [String] = []
+            let lines = output.split(separator: "\n").map(String.init)
+
+            for line in lines {
+                // Look for lines containing IP addresses and ports
+                // Common patterns: "192.168.x.x:5555" or similar
+                if let regex = try? NSRegularExpression(pattern: "([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}):([0-9]+)", options: []) {
+                    let nsString = line as NSString
+                    let matches = regex.matches(in: line, options: [], range: NSRange(location: 0, length: nsString.length))
+
+                    for match in matches {
+                        if match.numberOfRanges >= 1 {
+                            let deviceAddress = nsString.substring(with: match.range)
+                            if !devices.contains(deviceAddress) {
+                                devices.append(deviceAddress)
+                            }
+                        }
+                    }
+                }
+            }
+
+            return devices
+        } catch {
+            return []
+        }
+    }
+
+    /// Connect to a wireless device
+    func connectToWirelessDevice(address: String) -> Bool {
+        let adbPath = AppConfig.AndroidSDK.adbPath
+        let task = Process()
+        task.launchPath = AppConfig.Process.shellPath
+        task.environment = ProcessInfo.processInfo.environment.merging(
+            ["ANDROID_HOME": AppConfig.AndroidSDK.homeDirectory]
+        ) { _, new in new }
+        task.arguments = [AppConfig.Process.shellArgPrefix, AppConfig.Process.shellArgCommand, "\(adbPath) connect \(address)"]
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                // Check if connection was successful
+                return output.contains("connected") && !output.contains("failed")
+            }
+
+            return task.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    /// Disconnect offline wireless devices
+    func disconnectOfflineDevices() -> Int {
+        let offlineDevices = getOfflineWirelessDevices()
+        var disconnectedCount = 0
+
+        for device in offlineDevices {
+            let adbPath = AppConfig.AndroidSDK.adbPath
+            let task = Process()
+            task.launchPath = AppConfig.Process.shellPath
+            task.environment = ProcessInfo.processInfo.environment.merging(
+                ["ANDROID_HOME": AppConfig.AndroidSDK.homeDirectory]
+            ) { _, new in new }
+            task.arguments = [AppConfig.Process.shellArgPrefix, AppConfig.Process.shellArgCommand, "\(adbPath) disconnect \(device)"]
+
+            do {
+                try task.run()
+                task.waitUntilExit()
+                if task.terminationStatus == 0 {
+                    disconnectedCount += 1
+                }
+            } catch {
+                continue
+            }
+        }
+
+        return disconnectedCount
+    }
 }

@@ -13,6 +13,7 @@ struct LogOutputView: View {
 
     @State private var visibleFrames: [UUID: CGRect] = [:]
     @State private var scrollViewSize: CGSize = .zero
+    @State private var scrollTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -61,13 +62,25 @@ struct LogOutputView: View {
                     }
                     .onChange(of: scrollToEnd) {
                         if scrollToEnd, let lastLine = logOutput.last {
+                            // Cancel any existing scroll task
+                            scrollTask?.cancel()
+
                             withAnimation(.easeOut(duration: AppConfig.Timing.scrollLongAnimationDuration)) {
                                 scrollReader.scrollTo(lastLine.id, anchor: .bottom)
                             }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + AppConfig.Timing.scrollDebounceDelay) {
-                                scrollToEnd = false
+
+                            // Create a new task to reset scrollToEnd
+                            scrollTask = Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: UInt64(AppConfig.Timing.scrollDebounceDelay * 1_000_000_000))
+                                if !Task.isCancelled {
+                                    scrollToEnd = false
+                                }
                             }
                         }
+                    }
+                    .onDisappear {
+                        // Cancel scroll task when view disappears
+                        scrollTask?.cancel()
                     }
                     .background(
                         GeometryReader { geo in
@@ -103,7 +116,9 @@ struct LogOutputView: View {
         NSApplication.shared.activate(ignoringOtherApps: true)
         NSApp.mainWindow?.makeKeyAndOrderFront(nil)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + AppConfig.Timing.alertDelay) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(AppConfig.Timing.alertDelay * 1_000_000_000))
+
             let visibleRect = CGRect(
                 x: 0,
                 y: 0,

@@ -24,6 +24,8 @@ class AppViewModel: ObservableObject {
     @Published var scrollToEnd = false
     @Published var showSigningDialog = false
     @Published var showAuthDialog = false
+    @Published var showWirelessDeviceDialog = false
+    @Published var discoveredWirelessDevices: [String] = []
     @Published var authCode = ""
     @Published var taskDuration: TimeInterval = 0
     @Published var isScanningWireless = false
@@ -66,7 +68,7 @@ class AppViewModel: ObservableObject {
 
     // MARK: - Public Methods
 
-    func refreshAVDList() {
+    func refreshAVDList(scanWireless: Bool = false) {
         avdList.removeAll()
         avdList = androidService.getAVDList()
 
@@ -79,8 +81,10 @@ class AppViewModel: ObservableObject {
             logManager.log("⚠️ 未找到任何设备")
         }
 
-        Task {
-            refreshWirelessDevices()
+        if scanWireless {
+            Task {
+                refreshWirelessDevices()
+            }
         }
     }
 
@@ -332,7 +336,7 @@ class AppViewModel: ObservableObject {
     // MARK: - Private Methods
 
     private func loadInitialData() {
-        refreshAVDList()
+        refreshAVDList(scanWireless: true)
         detectModules()
     }
 
@@ -428,25 +432,51 @@ class AppViewModel: ObservableObject {
     }
 
     func startEmulatorStatusCheck() {
+        // Ensure we're on main thread when managing timers
+        guard Thread.isMainThread else {
+            Task { @MainActor in
+                self.startEmulatorStatusCheck()
+            }
+            return
+        }
+
         cleanupTimer()
 
-        emulatorCheckTimer = Timer.scheduledTimer(withTimeInterval: AppConfig.Timing.emulatorCheckInterval, repeats: true) { [weak self] _ in
+        emulatorCheckTimer = Timer.scheduledTimer(withTimeInterval: AppConfig.Timing.emulatorCheckInterval, repeats: true) { [weak self] timer in
+            guard let self = self else {
+                timer.invalidate()
+                return
+            }
             Task { @MainActor [weak self] in
-                self?.checkEmulatorStatus()
+                guard let self = self else { return }
+                self.checkEmulatorStatus()
             }
         }
-        RunLoop.main.add(emulatorCheckTimer!, forMode: .common)
+
+        if let timer = emulatorCheckTimer {
+            RunLoop.main.add(timer, forMode: .common)
+        }
         checkEmulatorStatus()
     }
 
     private func checkEmulatorStatus() {
-        Task {
-            let isRunning = androidService.isEmulatorRunning()
-            emulatorRunning = isRunning
+        let service = androidService
+        Task.detached {
+            let isRunning = await service.isEmulatorRunning()
+            await MainActor.run { [weak self] in
+                self?.emulatorRunning = isRunning
+            }
         }
     }
 
     private func cleanupTimer() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.sync {
+                self.cleanupTimer()
+            }
+            return
+        }
+
         emulatorCheckTimer?.invalidate()
         emulatorCheckTimer = nil
     }
@@ -650,8 +680,84 @@ class AppViewModel: ObservableObject {
     }
 
     private func refreshWirelessDevices() {
-        // Implementation for wireless device scanning would go here
-        // This is a placeholder - the full mDNS implementation from original file
-        // can be moved here if needed
+        guard !isScanningWireless else { return }
+
+        isScanningWireless = true
+        logManager.log("🔍 开始扫描无线设备...")
+
+        Task.detached { [weak self] in
+            guard let self = self else { return }
+
+            // Step 1: Clean up offline devices
+            let disconnectedCount = await self.androidService.disconnectOfflineDevices()
+            if disconnectedCount > 0 {
+                await MainActor.run { [weak self] in
+                    self?.logManager.log("✓ 已清理 \(disconnectedCount) 个离线设备")
+                }
+            }
+
+            // Step 2: Restart ADB with mDNS support
+            await MainActor.run { [weak self] in
+                self?.logManager.log("🔄 重启ADB服务以启用mDNS...")
+            }
+
+            let restartSuccess = await self.androidService.restartADBWithMDNS()
+            guard restartSuccess else {
+                await MainActor.run { [weak self] in
+                    self?.logManager.log("❌ 无法重启ADB服务", type: .error)
+                    self?.isScanningWireless = false
+                }
+                return
+            }
+
+            await MainActor.run { [weak self] in
+                self?.logManager.log("✓ ADB服务已重启，mDNS已启用")
+            }
+
+            // Step 3: Discover devices
+            await MainActor.run { [weak self] in
+                self?.logManager.log("🔍 正在搜索无线设备...")
+            }
+
+            let devices = await self.androidService.discoverMDNSDevices()
+
+            await MainActor.run { [weak self] in
+                guard let self = self else { return }
+
+                if devices.isEmpty {
+                    self.logManager.log("⚠️ 未发现任何无线设备")
+                    self.logManager.log("💡 提示：请确保设备和电脑在同一网络，且设备已开启无线调试")
+                } else {
+                    self.logManager.log("✓ 发现 \(devices.count) 个无线设备")
+                    self.discoveredWirelessDevices = devices
+                    self.showWirelessDeviceDialog = true
+                }
+
+                self.isScanningWireless = false
+            }
+        }
+    }
+
+    /// Connect to selected wireless device
+    func connectToWirelessDevice(_ address: String) {
+        logManager.log("🔗 正在连接到 \(address)...")
+
+        Task.detached { [weak self] in
+            guard let self = self else { return }
+
+            let success = await self.androidService.connectToWirelessDevice(address: address)
+
+            await MainActor.run { [weak self] in
+                guard let self = self else { return }
+
+                if success {
+                    self.logManager.log("✅ 成功连接到 \(address)", type: .success)
+                    // Refresh the device list to show the newly connected device
+                    self.refreshAVDList()
+                } else {
+                    self.logManager.log("❌ 连接 \(address) 失败", type: .error)
+                }
+            }
+        }
     }
 }

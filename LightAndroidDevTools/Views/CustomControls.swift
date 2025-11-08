@@ -46,16 +46,25 @@ struct UnifiedPicker<SelectionValue: Hashable, Content: View>: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: AppConfig.UI.cornerRadius)
-                .fill(Color(NSColor.controlBackgroundColor))
+                .fill(Color(NSColor.textBackgroundColor))
                 .overlay(
                     RoundedRectangle(cornerRadius: AppConfig.UI.cornerRadius)
                         .stroke(Color(NSColor.separatorColor), lineWidth: AppConfig.UI.borderWidth)
                 )
 
-            Picker("", selection: selection, content: content)
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .padding(.horizontal, 4)
+            if #available(macOS 26.0, *) {
+                Picker("", selection: selection, content: content)
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .buttonSizing(.flexible)
+                    .padding(.horizontal, 4)
+            } else {
+                Picker("", selection: selection, content: content)
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 4)
+            }
         }
         .frame(width: width, height: AppConfig.UI.controlHeight)
     }
