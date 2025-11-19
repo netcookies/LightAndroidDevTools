@@ -29,6 +29,7 @@ class AppViewModel: ObservableObject {
     @Published var authCode = ""
     @Published var taskDuration: TimeInterval = 0
     @Published var isScanningWireless = false
+    @Published var isMDNSEnabled = false
 
     // MARK: - Services
 
@@ -217,6 +218,10 @@ class AppViewModel: ObservableObject {
 
     func installAPK() {
         guard !settings.projectPath.isEmpty else { return }
+        guard selectedAVD != nil else {
+            logManager.log("❌ 请先选择目标设备", type: .error)
+            return
+        }
         isRunning = true
 
         Task {
@@ -683,7 +688,6 @@ class AppViewModel: ObservableObject {
         guard !isScanningWireless else { return }
 
         isScanningWireless = true
-        logManager.log("🔍 开始扫描无线设备...")
 
         Task.detached { [weak self] in
             guard let self = self else { return }
@@ -696,22 +700,30 @@ class AppViewModel: ObservableObject {
                 }
             }
 
-            // Step 2: Restart ADB with mDNS support
-            await MainActor.run { [weak self] in
-                self?.logManager.log("🔄 重启ADB服务以启用mDNS...")
+            // Step 2: Restart ADB with mDNS support (only on first use)
+            let needsRestart = await MainActor.run { [weak self] in
+                guard let self = self else { return false }
+                return !self.isMDNSEnabled
             }
 
-            let restartSuccess = await self.androidService.restartADBWithMDNS()
-            guard restartSuccess else {
+            if needsRestart {
                 await MainActor.run { [weak self] in
-                    self?.logManager.log("❌ 无法重启ADB服务", type: .error)
-                    self?.isScanningWireless = false
+                    self?.logManager.log("🔄 首次使用，正在启用 mDNS 功能...")
                 }
-                return
-            }
 
-            await MainActor.run { [weak self] in
-                self?.logManager.log("✓ ADB服务已重启，mDNS已启用")
+                let restartSuccess = await self.androidService.restartADBWithMDNS()
+                guard restartSuccess else {
+                    await MainActor.run { [weak self] in
+                        self?.logManager.log("❌ 无法重启ADB服务", type: .error)
+                        self?.isScanningWireless = false
+                    }
+                    return
+                }
+
+                await MainActor.run { [weak self] in
+                    self?.logManager.log("✓ mDNS 已启用")
+                    self?.isMDNSEnabled = true
+                }
             }
 
             // Step 3: Discover devices

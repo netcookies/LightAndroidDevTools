@@ -224,7 +224,7 @@ struct FullView: View {
                     }
                 }
                 .buttonStyle(ToolbarButtonStyle())
-                .disabled(viewModel.settings.projectPath.isEmpty || viewModel.isRunning)
+                .disabled(viewModel.settings.projectPath.isEmpty || viewModel.isRunning || viewModel.selectedAVD == nil)
 
                 Button(action: { viewModel.showAuthDialog = true }) {
                     HStack(spacing: 4) {
