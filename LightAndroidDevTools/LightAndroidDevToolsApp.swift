@@ -352,6 +352,14 @@ struct CompactView: View {
                 .buttonStyle(CompactIconButtonStyle())
                 .help("刷新设备")
 
+                Button(action: viewModel.startAVD) {
+                    Image(systemName: viewModel.emulatorRunning ? "stop.circle.fill" : "play.fill")
+                        .frame(width: AppConfig.UI.iconFrameSize, height: AppConfig.UI.iconFrameSize)
+                }
+                .buttonStyle(CompactIconButtonStyle())
+                .disabled(viewModel.selectedAVD == nil)
+                .help(viewModel.emulatorRunning ? "关闭模拟器" : "启动模拟器")
+
                 UnifiedPicker(selection: $viewModel.selectedDevice) {
                     Text("选择设备").tag(nil as String?)
                     ForEach(viewModel.connectedDevices, id: \.self) { device in
