@@ -6,7 +6,8 @@
       "WebFetch(domain:stackoverflow.com)",
       "WebFetch(domain:forums.swift.org)",
       "Bash(mkdir -p LightAndroidDevTools/Config LightAndroidDevTools/Models LightAndroidDevTools/Services LightAndroidDevTools/Views LightAndroidDevTools/Extensions)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []

@@ -127,13 +127,25 @@ struct FullView: View {
 
                 HStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("设备")
+                        Text("虚拟设备 (AVD)")
                             .font(.caption)
                             .foregroundColor(.gray)
-                        UnifiedPicker(selection: $viewModel.selectedAVD, width: 325) {
-                            Text("选择设备").tag(nil as String?)
+                        UnifiedPicker(selection: $viewModel.selectedAVD, width: 200) {
+                            Text("选择虚拟设备").tag(nil as String?)
                             ForEach(viewModel.avdList, id: \.self) { avd in
                                 Text(avd).tag(avd as String?)
+                            }
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("已连接设备")
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                        UnifiedPicker(selection: $viewModel.selectedDevice, width: 200) {
+                            Text("选择设备").tag(nil as String?)
+                            ForEach(viewModel.connectedDevices, id: \.self) { device in
+                                Text(device).tag(device as String?)
                             }
                         }
                     }
@@ -204,7 +216,7 @@ struct FullView: View {
                     }
                 }
                 .buttonStyle(ToolbarButtonStyle())
-                .disabled(viewModel.settings.projectPath.isEmpty || viewModel.selectedAVD == nil || viewModel.isRunning)
+                .disabled(viewModel.settings.projectPath.isEmpty || viewModel.selectedDevice == nil || viewModel.isRunning)
 
                 Button(action: viewModel.buildAPK) {
                     HStack(spacing: 4) {
@@ -224,7 +236,7 @@ struct FullView: View {
                     }
                 }
                 .buttonStyle(ToolbarButtonStyle())
-                .disabled(viewModel.settings.projectPath.isEmpty || viewModel.isRunning || viewModel.selectedAVD == nil)
+                .disabled(viewModel.settings.projectPath.isEmpty || viewModel.isRunning || viewModel.selectedDevice == nil)
 
                 Button(action: { viewModel.showAuthDialog = true }) {
                     HStack(spacing: 4) {
@@ -285,7 +297,7 @@ struct CompactView: View {
                         .frame(width: AppConfig.UI.iconFrameSize, height: AppConfig.UI.iconFrameSize)
                 }
                 .buttonStyle(CompactIconButtonStyle())
-                .disabled(viewModel.settings.projectPath.isEmpty || viewModel.selectedAVD == nil || viewModel.isRunning)
+                .disabled(viewModel.settings.projectPath.isEmpty || viewModel.selectedDevice == nil || viewModel.isRunning)
                 .help("编译并运行")
 
                 Button(action: viewModel.buildAPK) {
@@ -340,18 +352,10 @@ struct CompactView: View {
                 .buttonStyle(CompactIconButtonStyle())
                 .help("刷新设备")
 
-                Button(action: viewModel.startAVD) {
-                    Image(systemName: viewModel.emulatorRunning ? "stop.circle.fill" : "play.fill")
-                        .frame(width: AppConfig.UI.iconFrameSize, height: AppConfig.UI.iconFrameSize)
-                }
-                .buttonStyle(CompactIconButtonStyle())
-                .disabled(viewModel.selectedAVD == nil)
-                .help(viewModel.emulatorRunning ? "关闭模拟器" : "启动模拟器")
-
-                UnifiedPicker(selection: $viewModel.selectedAVD) {
+                UnifiedPicker(selection: $viewModel.selectedDevice) {
                     Text("选择设备").tag(nil as String?)
-                    ForEach(viewModel.avdList, id: \.self) { avd in
-                        Text(avd).tag(avd as String?)
+                    ForEach(viewModel.connectedDevices, id: \.self) { device in
+                        Text(device).tag(device as String?)
                     }
                 }
                 .font(.caption)

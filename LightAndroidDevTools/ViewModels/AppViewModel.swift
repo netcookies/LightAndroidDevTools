@@ -17,6 +17,8 @@ class AppViewModel: ObservableObject {
 
     @Published var avdList: [String] = []
     @Published var selectedAVD: String?
+    @Published var connectedDevices: [String] = []
+    @Published var selectedDevice: String?
     @Published var detectedModules: [String] = []
     @Published var isRunning = false
     @Published var emulatorRunning = false
@@ -70,6 +72,7 @@ class AppViewModel: ObservableObject {
     // MARK: - Public Methods
 
     func refreshAVDList(scanWireless: Bool = false) {
+        // Refresh AVD list (virtual devices)
         avdList.removeAll()
         avdList = androidService.getAVDList()
 
@@ -77,9 +80,22 @@ class AppViewModel: ObservableObject {
             if selectedAVD == nil {
                 selectedAVD = avdList[0]
             }
-            logManager.log("✓ 找到设备: \(avdList.joined(separator: ", "))")
+            logManager.log("✓ 找到虚拟设备: \(avdList.joined(separator: ", "))")
         } else {
-            logManager.log("⚠️ 未找到任何设备")
+            logManager.log("⚠️ 未找到任何虚拟设备")
+        }
+
+        // Refresh connected devices list
+        connectedDevices.removeAll()
+        connectedDevices = androidService.getConnectedDevices()
+
+        if !connectedDevices.isEmpty {
+            if selectedDevice == nil {
+                selectedDevice = connectedDevices[0]
+            }
+            logManager.log("✓ 找到已连接设备: \(connectedDevices.joined(separator: ", "))")
+        } else {
+            logManager.log("⚠️ 未找到任何已连接设备")
         }
 
         if scanWireless {
@@ -128,9 +144,8 @@ class AppViewModel: ObservableObject {
 
                 // Add device selector if a device is selected
                 var deviceSelector = ""
-                if let selectedDevice = selectedAVD,
-                   let deviceId = androidService.getDeviceId(from: selectedDevice) {
-                    deviceSelector = "-s \(deviceId) "
+                if let device = selectedDevice {
+                    deviceSelector = "-s \(device) "
                 }
                 let cmd = "cd \(settings.projectPath) && ./gradlew \(gradleTask) && sleep 2 && \(AppConfig.AndroidSDK.adbPath) \(deviceSelector)shell am start -n \(packageName)/.\(mainActivity)"
                 executeCommandAsync(cmd, label: "编译并运行")
@@ -218,7 +233,7 @@ class AppViewModel: ObservableObject {
 
     func installAPK() {
         guard !settings.projectPath.isEmpty else { return }
-        guard selectedAVD != nil else {
+        guard selectedDevice != nil else {
             logManager.log("❌ 请先选择目标设备", type: .error)
             return
         }
@@ -267,9 +282,8 @@ class AppViewModel: ObservableObject {
 
                 // Add device selector if a device is selected
                 var deviceSelector = ""
-                if let selectedDevice = selectedAVD,
-                   let deviceId = androidService.getDeviceId(from: selectedDevice) {
-                    deviceSelector = "-s \(deviceId) "
+                if let device = selectedDevice {
+                    deviceSelector = "-s \(device) "
                 }
                 let installCmd = "\(adbPath) \(deviceSelector)install -r \"\(apkPath)\""
                 executeCommandAsync(installCmd, label: "安装\(buildVariant.capitalized) APK")
@@ -291,9 +305,8 @@ class AppViewModel: ObservableObject {
         Task {
             // Add device selector if a device is selected
             var deviceSelector = ""
-            if let selectedDevice = selectedAVD,
-               let deviceId = androidService.getDeviceId(from: selectedDevice) {
-                deviceSelector = "-s \(deviceId) "
+            if let device = selectedDevice {
+                deviceSelector = "-s \(device) "
             }
             let command = "\(AppConfig.AndroidSDK.adbPath) \(deviceSelector)shell input text \(code)"
             executeCommandAsync(command, label: "授权设备")

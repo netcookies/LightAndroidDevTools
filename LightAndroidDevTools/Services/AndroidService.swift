@@ -66,20 +66,48 @@ class AndroidService {
         return nil
     }
 
-    /// Get list of available AVDs and connected devices
+    /// Get list of available AVDs (virtual devices)
     func getAVDList() -> [String] {
         let emulatorPath = AppConfig.AndroidSDK.emulatorPath
-        let adbPath = AppConfig.AndroidSDK.adbPath
-
         let listAVDsCmd = "\(emulatorPath) -list-avds"
-        let listDevicesCmd = "\(adbPath) devices | grep -v 'List' | awk '{print $1}'"
 
         let task = Process()
         task.launchPath = AppConfig.Process.shellPath
         task.environment = ProcessInfo.processInfo.environment.merging(
             ["ANDROID_HOME": AppConfig.AndroidSDK.homeDirectory]
         ) { _, new in new }
-        task.arguments = [AppConfig.Process.shellArgPrefix, AppConfig.Process.shellArgCommand, "\(listAVDsCmd); echo; \(listDevicesCmd)"]
+        task.arguments = [AppConfig.Process.shellArgPrefix, AppConfig.Process.shellArgCommand, listAVDsCmd]
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                let lines = output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+                return lines
+            }
+        } catch {
+            return []
+        }
+
+        return []
+    }
+
+    /// Get list of connected devices (both emulators and physical devices)
+    func getConnectedDevices() -> [String] {
+        let adbPath = AppConfig.AndroidSDK.adbPath
+        let listDevicesCmd = "\(adbPath) devices | grep -v 'List' | grep 'device$' | awk '{print $1}'"
+
+        let task = Process()
+        task.launchPath = AppConfig.Process.shellPath
+        task.environment = ProcessInfo.processInfo.environment.merging(
+            ["ANDROID_HOME": AppConfig.AndroidSDK.homeDirectory]
+        ) { _, new in new }
+        task.arguments = [AppConfig.Process.shellArgPrefix, AppConfig.Process.shellArgCommand, listDevicesCmd]
 
         let pipe = Pipe()
         task.standardOutput = pipe
